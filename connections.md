@@ -1,0 +1,19 @@
+# Connections
+
+Registry of every external system this project reaches. Unlike a fresh AIS-OS clone (where this table starts blank and `/onboard` fills it in), these are already wired — this file documents what's real, not a setup checklist.
+
+| # | Domain | Tool | Mechanism | Auth | Last checked |
+|---|---|---|---|---|---|
+| 1 | Job postings — LinkedIn | Apify (`curious_coder~linkedin-jobs-scraper` actor) | `script` — `scripts/fetch_jobs.py` | `APIFY_TOKEN` in `.env` | Not re-verified live this session — pre-existing, working as of earlier runs (see `outputs/` history) |
+| 2 | Job postings — company career sites | Greenhouse / Lever / Workday public APIs, direct | `script` — `scripts/fetch_companies.py` | none (all three are unauthenticated) | 2026-08-17 — live-verified against RBC, TD, Manulife, Loblaw, Enbridge, TC Energy (Workday), Stripe (Greenhouse), Jobgether (Lever) |
+| 3 | Sheet output (job postings + raw Applications data) | Google Sheets | `script` — `scripts/push_to_sheets.py`, `scripts/update_application_tracker.py`, `scripts/build_dashboard_data.py` (read), via `gspread` + a Google service account | `JSON_KEY_BASE_64` + `SHEET_ID` in `.env` | 2026-08-17 — merge/dedupe/cross-tab and dashboard-aggregation logic unit-tested with mocked sheet objects; not exercised against the real spreadsheet this session (deliberately, to avoid writing test data into it) |
+| 4 | Application status tracking | Gmail | `mcp` — Gmail connector, read-only (`search_threads`, `get_thread` only; never `label_thread`/`label_message`/`create_label`/any mutation tool) | Connector-level OAuth, managed outside this repo via Claude Code's MCP connection | Not yet run live — `application-tracker` skill built this session, not yet exercised against a real inbox |
+| 5 | Application dashboard (display) | Claude Artifact | direct Claude Code tooling — not a `mcp`/`script`/API integration; `application-tracker` writes HTML from `outputs/dashboard_data.json` and publishes/updates it | Private by default (viewer's claude.ai login); URL persisted in `archives/dashboard_state.json` so updates hit the same page | Not yet published — no real Gmail scan has run yet to generate data for it |
+
+**Mechanism options:** `mcp` (MCP connector, judgment/reasoning work — e.g. reading and classifying an email), `script` (Python hitting an API directly, in `scripts/` — deterministic, high-volume, no judgment needed), `export`, `key+ref`, `not yet connected`.
+
+**Why Sheets is `script` and Gmail is `mcp`, not the same mechanism for both**: Sheets writes here are mechanical (merge rows, compare IDs, format cells) — no judgment involved, so it belongs in tested code that costs zero LLM tokens per row regardless of volume. Gmail requires reading and classifying real email content ("is this an interview invite or a rejection?") — genuine reasoning that has to happen with the content in context, which is exactly what an MCP connector is for. See `decisions/log.md` entries on both.
+
+**Row 3 (Sheets) and row 5 (dashboard) are intentionally unconnected.** The job-postings Sheet and the Gmail-derived dashboard don't reference each other — the dashboard is built purely from row 4's Gmail data via row 3's *Applications tab specifically*, never from the date-based job tabs.
+
+Local-only capabilities (resume parsing via `pdfplumber`, LaTeX compilation via `tectonic`/`pdflatex`) aren't listed here — this table is for systems reached *outside* this repo, not local file processing.

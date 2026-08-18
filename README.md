@@ -2,11 +2,11 @@
 
 ## What we're building
 
-A local Python project that turns a resume PDF into a live list of matching job postings — from LinkedIn *and* company career sites — in a Google Sheet, plus a tailored resume PDF for every strong match and a read-only tracker of what happened to each application. No deployment. No external LLM calls. Claude Code is the reasoning layer.
+A local Python project that turns a resume PDF into a live list of matching job postings — from LinkedIn *and* company career sites — in a Google Sheet, plus a tailored resume PDF for every strong match and a read-only Gmail dashboard tracking what happened to each application. No deployment. No external LLM calls. Claude Code is the reasoning layer.
 
 ## How it works end to end
 
-1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan).
+1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan). It also asks whether you want Gmail application tracking enabled — say yes and it runs an initial scan right there.
 2. From then on, just say *"find jobs for me"* — the **job-search** skill runs:
    - `scripts/fetch_jobs.py`, which calls Apify's LinkedIn Jobs Scraper (Curious Coder), filtered to the last 24 hours
    - `scripts/fetch_companies.py` (if `configs/companies.json` exists), which hits company career sites directly — Greenhouse, Lever, and Workday's public JSON APIs
@@ -15,7 +15,7 @@ A local Python project that turns a resume PDF into a live list of matching job 
    - `scripts/generate_resumes.py`, which generates a tailored PDF resume (from `templates/resume_template.tex`) for every posting scoring above `resume_tailoring_min_score`
 3. Claude Code prints the sheet URL and a one-line summary.
 4. Got a new/updated resume later? Just give it to Claude Code — the onboard skill re-runs, diffs it against your existing profile, and asks what to accept before changing anything.
-5. Anytime, say *"check my applications"* — the **application-tracker** skill does a read-only scan of Gmail for application-related emails (confirmations, interviews, offers, rejections), classifies each one, and upserts the result into a dedicated **Applications** tab in the same sheet. It never modifies Gmail — no labels, no message changes, read-only.
+5. Anytime, say *"check my applications"* (or "update my dashboard") — the **application-tracker** skill does a read-only scan of Gmail for application-related emails (confirmations, interviews, offers, rejections), classifies each one, upserts the result into a dedicated **Applications** tab, and republishes a private **dashboard** (counts + "time to follow up" / "send a thank-you" flags) as a Claude Artifact at a stable URL. This dashboard is entirely independent of the job-postings Sheet — it's built purely from Gmail, doesn't know or care what's in the Sheet. It never modifies Gmail — no labels, no message changes, no drafted/sent emails, read-only.
 
 ## Why this design
 
@@ -44,24 +44,26 @@ A local Python project that turns a resume PDF into a live list of matching job 
 job-hunter/
   CLAUDE.md                short manifest — points at the skills below
   .claude/skills/
-    onboard/SKILL.md               one-time (or re-run) profile setup
+    onboard/SKILL.md               one-time (or re-run) profile setup + Gmail tracking opt-in
     job-search/SKILL.md            the recurring fetch → score → push → tailor flow
-    application-tracker/SKILL.md    read-only Gmail scan → Applications tab
+    application-tracker/SKILL.md    read-only Gmail scan → Applications tab → dashboard Artifact
   README.md                same as this brief, for humans
+  connections.md            registry of every external system this project reaches (script vs mcp)
+  decisions/log.md          append-only record of meaningful design decisions and why
   example.env              template with placeholders — copy to .env and fill in
   .env                     APIFY_TOKEN, JSON_KEY_BASE_64, SHEET_ID (never committed)
   .gitignore               ignores .env, resumes/, outputs/, context/*.md, archives/, configs/search.json
   requirements.txt
   resumes/                  your resume PDF lives here (resume.pdf)
   context/
-    profile.md               your full profile — identity, history, skills (gitignored, contains PII)
+    profile.md               your full profile — identity, history, skills, gmail_tracking_enabled (gitignored, contains PII)
   configs/
     search.json                derived search plan, generated by the onboard skill (gitignored, personal)
     companies.json              target companies + their ATS platform for direct career-site fetching (tracked — not personal data)
   templates/
     resume_template.tex        LaTeX template the tailoring step fills in
     resume.cls                  its document class (FAANGPath / Trey Hunner format)
-  archives/                  safety snapshots of profile.md/search.json before a re-onboard; gmail_scan_state.json
+  archives/                  safety snapshots of profile.md/search.json before a re-onboard; gmail_scan_state.json; dashboard_state.json (Artifact URL)
   scripts/
     fetch_jobs.py                 calls Apify, returns raw JSON
     fetch_companies.py             calls Greenhouse/Lever/Workday APIs directly, returns raw JSON
@@ -69,8 +71,10 @@ job-hunter/
     push_to_sheets.py             appends to the Google Sheet (date-based job tabs)
     generate_resumes.py            renders tailored PDFs for strong matches
     update_application_tracker.py   upserts Gmail-derived status into the Applications tab
+    build_dashboard_data.py         aggregates the Applications tab into dashboard counts + flags
   outputs/
     raw_linkedin.json, raw_companies.json, scored.json    per-run data
+    dashboard_data.json                                     computed dashboard summary (input to the Artifact)
     tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/                generated PDFs (gitignored, contains PII)
 ```
 
@@ -132,6 +136,7 @@ The onboard skill generates this from your profile. Example:
   "require_title_match": false,
   "min_match_score": 50,
   "resume_tailoring_min_score": 60,
+  "max_posting_age_days": 7,
   "core_skills": {
     "python":    {"weight": 3, "variants": ["python", "pandas", "numpy"]},
     "sql":       {"weight": 3, "variants": ["sql", "mysql", "postgres"]},
@@ -146,7 +151,7 @@ The onboard skill generates this from your profile. Example:
 }
 ```
 
-`location.region_aliases` lists spelling variants of the province LinkedIn may use in posting-location strings (e.g. `["Ontario", "ON"]`) — used to keep only postings in that province, plus remote postings anywhere in `country` when `include_remote_in_country` is true. `title_match_bonus` (default 6) is added when the job title contains any of the `target_roles` phrases — bump higher to make title alignment dominate. Set `require_title_match: true` to hard-drop postings whose titles don't match. `resume_tailoring_min_score` (default 60) is the threshold above which `generate_resumes.py` produces a tailored PDF.
+`location.region_aliases` only affects `fetch_jobs.py`'s LinkedIn search-URL construction (one of its two searches is province-scoped, the other is country-wide + remote) — it does **not** restrict what the scorer keeps. The scorer's own location filter is country-wide: any posting located anywhere in `location.country`, or a remote posting mentioning that country, passes — a real fix, not just a design choice: an earlier version matched province code `"ON"` via naive substring search, which falsely matched inside the word "London" (`re.search(r"\bON\b", ...)` word-boundary matching now prevents that). `title_match_bonus` (default 6) is added when the job title contains any of the `target_roles` phrases — bump higher to make title alignment dominate. Set `require_title_match: true` to hard-drop postings whose titles don't match. `resume_tailoring_min_score` (default 60) is the threshold above which `generate_resumes.py` produces a tailored PDF. `max_posting_age_days` (default 7) drops postings older than a week — applies to every source; a posting whose date can't be determined is kept, not dropped, and counted separately in the summary line.
 
 ## Company career-site config (`configs/companies.json`)
 
@@ -187,17 +192,19 @@ For every scored posting above `resume_tailoring_min_score` (default 60), `scrip
 
 Filenames are `<company>_<job-title>_<posting-id>.pdf`, nested by month then day so runs don't pile up in one flat folder — same date-ownership pattern `push_to_sheets.py` uses for its tab names. The intermediate `.tex` files are kept alongside in that day's `tex/` subfolder for inspection.
 
-## Application tracker
+## Application tracker + dashboard
 
-Independent of job-search — run any time by saying "check my applications". The `application-tracker` skill:
+Independent of job-search and of the job-postings Sheet — run any time by saying "check my applications" or "update my dashboard". The `application-tracker` skill:
 
-1. Searches Gmail broadly for application-signal emails (keywords + known ATS/recruiting sender domains), scoped to since the last scan (`archives/gmail_scan_state.json`) or the last 90 days on first run
+1. Searches Gmail broadly for application-signal emails (keywords + known ATS/recruiting sender domains), scoped to since the last scan (`archives/gmail_scan_state.json`) or the last 90 days on first run (30 days if this is the initial scan triggered by onboarding)
 2. Reads each plausible thread in full and classifies it itself — Company, Role, Status (`Applied`, `Under Review`, `Assessment`, `Interview`, `Offer`, `Rejected`, `Withdrawn`, `Other`) — no fixed keyword-to-status mapping, judgment call on real content
 3. Upserts the results into a dedicated **Applications** tab via `scripts/update_application_tracker.py`, keyed by Gmail thread link — re-scanning the same thread updates its row instead of duplicating it
+4. Computes dashboard data via `scripts/build_dashboard_data.py` — totals by status, plus two flagged lists: **needs follow-up** (still `Applied`/`Under Review` after 7+ days of silence) and **needs a thank-you** (currently `Interview` status — a highlighted flag, not a drafted or sent email)
+5. Publishes/updates a private **Claude Artifact** dashboard at a stable URL (persisted in `archives/dashboard_state.json` so re-runs update the same page instead of creating a new one each time)
 
-**This is read-only.** It only calls Gmail's `search_threads`/`get_thread` — never `label_thread`, `label_message`, `create_label`, or any other mutation. Your inbox is never modified, only read.
+**This is read-only.** It only calls Gmail's `search_threads`/`get_thread` — never `label_thread`, `label_message`, `create_label`, or any other mutation, and never drafts or sends mail. Your inbox is never modified, only read.
 
-The Applications tab is entirely separate from the date-based job-search tabs (`2026-07-21`, etc.) and from `push_to_sheets.py`'s merge logic — it's its own tab, own schema, own script.
+The Applications tab is entirely separate from the date-based job-search tabs (`2026-07-21`, etc.) and from `push_to_sheets.py`'s merge logic — it's its own tab, own schema, own scripts. The dashboard itself never references job postings at all — it's built purely from what Gmail says about your applications, independent of whether/how a posting came from this tool.
 
 ## Google Sheet layout
 
@@ -217,10 +224,14 @@ Each run writes to a tab named by date, for example `2026-07-21`. Columns:
 12. Job Description
 13. Apply Link
 14. Fetched At
+15. Posting ID
+16. New Since Last Run
 
 Header row bold, freeze first row, filter on all columns, sorted by Match Score descending.
 
 **Same-day re-runs merge into the existing tab.** Rows are keyed by apply link — new postings are appended, and postings that already appear are refreshed with the latest score/details. A new calendar day starts a fresh tab. If the tab's header row doesn't match the current schema (e.g., after a code update that adds a column), the existing rows are discarded and the tab is rewritten with just the current run's data — no half-schema stitching.
+
+**Posting ID** is a stable hash of each posting's apply link (or company+title+location+source if it has no link) — the same posting gets the same ID on every run, which is what makes cross-day comparison possible. **New Since Last Run** compares today's Posting IDs against the most recent *previous* date tab and marks `Yes`/`No` — pure visibility, nothing is ever dropped from the sheet based on this; a still-open posting keeps showing up across days. If there's no comparable previous tab yet (first run, or an older tab from before this column existed), everything is marked `Yes` and the run's printed summary says so explicitly rather than treating it as a silent default.
 
 **Source** is tagged at fetch time (`LinkedIn`, or `<Company> Careers` for direct career-site postings), so adding another portal later just means a new fetch script that tags `Source` differently — score/push code stays unchanged. The **Applications** tab (see above) is a separate, non-date-named tab in the same spreadsheet — not part of this rotation.
 

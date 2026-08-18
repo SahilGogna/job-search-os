@@ -23,14 +23,18 @@ If any of the required steps below fails, print the error and stop. Do not silen
    - `--raw-in` takes one or more paths — pass both files if step 2 ran, otherwise just the LinkedIn one.
    - Match Score is 0–100: `round((skill_weights_matched + title_bonus − experience_penalty) / (sum_of_all_skill_weights + title_match_bonus) × 100)`. Anything that computes to ≤0 is dropped. Postings below `min_match_score` are dropped.
    - Dedupes twice: first by exact link, then by normalized (company, title) so the same posting mirrored across LinkedIn and a company's own site collapses to one row (keeping whichever copy has the richer description).
+   - **Country filter**: keeps any posting anywhere in `location.country` (not just the candidate's province), plus remote postings mentioning the country — word-boundary-safe matching, not naive substring (a past bug let "ON" match inside "London"; fixed).
+   - **Age filter**: drops postings older than `max_posting_age_days` (default 7). Postings whose date can't be parsed (mainly some Workday listings using relative text) are kept, not dropped — the printed summary reports how many.
+   - Each scored row gets a stable `posting_id` (hash of its apply link, or company+title+location+source if no link) — the same posting produces the same ID across separate days, which is what makes the "New Since Last Run" column below possible. The summary line reports how many distinct IDs were verified.
 
 4. **Push**: `python scripts/push_to_sheets.py --scored-in outputs/scored.json --tab-name <YYYY-MM-DD>`
    - Tab is date-based — a new day starts a fresh tab. Same-day re-runs **merge** into the existing tab keyed by apply link — the fresher row wins on collision.
+   - Before writing, compares today's posting IDs against the most recent *previous* date tab (skips the "Applications" tab and any tab from before this feature shipped) and marks each row's `New Since Last Run` column `Yes`/`No` accordingly — pure visibility, nothing is dropped based on this. The summary line reports the counts, or says so explicitly if there's no comparable previous tab yet.
 
 5. **Tailor resumes**: `python scripts/generate_resumes.py --config configs/search.json --profile context/profile.md --scored-in outputs/scored.json --template templates/resume_template.tex --out-dir outputs/tailored_resumes`
    - Generates one PDF per posting scoring above `resume_tailoring_min_score` (default 60) into `outputs/tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/`, reordering the candidate's existing skills/bullets toward that posting's matched keywords — never inventing content. Skip this step (with a note in the summary) if no LaTeX engine was found in Prerequisites.
 
-6. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites), kept N after scoring, tailored M resumes (score > 60), wrote to tab `<date>`."
+6. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites), kept N after scoring, tailored M resumes (score > 60), wrote to tab `<date>` (P new since last sheet, Q already seen)."
 
 ## URL construction (what fetch_jobs.py does under the hood)
 
@@ -38,7 +42,7 @@ For every target role the fetcher builds two LinkedIn search URLs:
 1. `keywords=<role>&location=<region, country>&f_TPR=r86400[&f_E=<seniority>]` — province-wide.
 2. If `include_remote_in_country`: `keywords=<role>&location=<country>&f_WT=2&f_TPR=r86400[&f_E=<seniority>]`
 
-So 5 target roles with remote enabled produce 10 URLs. Total results requested from Apify = `results_per_search × url_count`. The scorer then drops postings whose `location` string doesn't match any `region_aliases` and isn't a remote posting in `country`. Empty posting locations fail-open.
+So 5 target roles with remote enabled produce 10 URLs. Total results requested from Apify = `results_per_search × url_count`. `region_aliases` only affects this fetch-time URL construction (the province-scoped search) — the scorer's own filter (applied to every source, not just LinkedIn) is country-wide: it drops postings whose `location` string doesn't mention `country` and aren't a remote posting mentioning it either. Empty posting locations fail-open.
 
 ## What fetch_companies.py does under the hood
 

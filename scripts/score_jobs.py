@@ -15,6 +15,7 @@ raw_companies.json) -- all are concatenated before dedup/scoring.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -22,7 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TITLE_MATCH_BONUS_DEFAULT = 6
+MAX_POSTING_AGE_DAYS_DEFAULT = 7
 EXPERIENCE_REGEX = re.compile(r"(\d+)\s*\+?\s*(?:to\s*\d+\s*)?years?", re.IGNORECASE)
+WORKDAY_RELATIVE_DATE_REGEX = re.compile(r"posted\s+(today|yesterday|(\d+)\+?\s*days?\s*ago)", re.IGNORECASE)
 
 
 def dedupe(items: list[dict]) -> list[dict]:
@@ -79,44 +82,100 @@ def excluded_by_title(title: str, excludes: list[str]) -> bool:
     return any(term.lower() in t for term in excludes)
 
 
-def passes_location_filter(item: dict, config: dict) -> bool:
-    """Keep postings inside the candidate's province, or remote-in-country.
+def _word_match(needle: str, haystack: str) -> bool:
+    """Word-boundary-safe containment check -- not a naive substring `in`.
 
-    Fail-open on empty posting location so we don't drop rows we can't classify.
+    Naive substring matching is how "ON" (Ontario) used to false-positive
+    match inside "London" (the "on" in "Lond-on"). \\b anchors to word edges.
+    """
+    if not needle:
+        return False
+    return re.search(rf"\b{re.escape(needle.lower())}\b", haystack) is not None
+
+
+def passes_location_filter(item: dict, config: dict) -> bool:
+    """Keep postings anywhere in the candidate's country, or remote-in-country.
+
+    Country-wide, not province-restricted -- a posting in any city within
+    `location.country` passes, as does a remote posting whose text mentions
+    that country. `location.region`/`region_aliases` are NOT used here (they
+    still drive fetch_jobs.py's LinkedIn URL construction, a separate,
+    fetch-time concern). Fail-open on empty posting location so we don't drop
+    rows we can't classify.
     """
     loc = config.get("location") or {}
-    region = (loc.get("region") or "").strip()
     country = (loc.get("country") or "").strip()
     allow_remote = bool(loc.get("include_remote_in_country", True))
-    aliases = [a for a in loc.get("region_aliases", []) if a]
-    if region and region not in aliases:
-        aliases.append(region)
 
-    if not aliases and not country:
+    if not country:
         return True
 
     posting_loc = (item.get("location") or "").strip().lower()
     if not posting_loc:
         return True
 
-    for alias in aliases:
-        if alias.lower() in posting_loc:
-            return True
+    if _word_match(country, posting_loc):
+        return True
 
-    if allow_remote and country:
+    if allow_remote:
         workplace = str(item.get("workplaceType") or item.get("workType") or "").lower()
         text = " ".join(
             [
                 posting_loc,
                 workplace,
                 (item.get("title") or "").lower(),
-                (item.get("description") or "").lower(),
+                description_of(item).lower(),
             ]
         )
-        if country.lower() in posting_loc and "remote" in text:
+        if _word_match(country, text) and _word_match("remote", text):
             return True
 
     return False
+
+
+def posted_at_of(item: dict) -> str:
+    return str(item.get("postedTime") or item.get("postedAt") or item.get("posted") or item.get("listedAt") or "")
+
+
+def posting_age_days(posted_raw: str) -> int | None:
+    """Best-effort age of a posting in days, across the three date shapes this
+    pipeline's sources actually produce. Returns None if undeterminable --
+    callers keep (don't drop) postings with an unknown age, just count them.
+
+    - Greenhouse: ISO 8601 (first_published/updated_at)
+    - Lever: epoch milliseconds, as a numeric string (createdAt)
+    - Workday: relative text ("Posted Today", "Posted 5 Days Ago", "Posted 30+ Days Ago")
+    """
+    raw = (posted_raw or "").strip()
+    if not raw:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - dt).days)
+    except ValueError:
+        pass
+
+    if raw.isdigit():
+        try:
+            dt = datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+            return max(0, (datetime.now(timezone.utc) - dt).days)
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    match = WORKDAY_RELATIVE_DATE_REGEX.search(raw)
+    if match:
+        word = match.group(1).lower()
+        if word == "today":
+            return 0
+        if word == "yesterday":
+            return 1
+        if match.group(2):
+            return int(match.group(2))
+
+    return None
 
 
 def match_skills(text: str, core_skills: dict) -> tuple[int, list[str]]:
@@ -165,6 +224,17 @@ def normalize_score(raw: int, max_raw: int) -> int:
     return max(0, min(100, round(raw / max_raw * 100)))
 
 
+def make_posting_id(apply_link: str, company: str, title: str, location: str, source: str) -> str:
+    """Stable ID for a posting, derived from its identity, not assigned randomly
+    -- the same posting produces the same ID across separate runs/days, which
+    is what makes cross-sheet "new since last run" comparison possible.
+    apply_link is preferred (it's already the key dedupe()/dedupe_cross_source()
+    collapse on); falls back to a normalized company+title+location+source
+    tuple only if a posting genuinely has no link."""
+    basis = apply_link.strip().lower() or f"{company}|{title}|{location}|{source}".strip().lower()
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:12]
+
+
 def score_item(item: dict, config: dict, max_raw: int) -> dict | None:
     title = title_of(item)
     if not title:
@@ -172,6 +242,11 @@ def score_item(item: dict, config: dict, max_raw: int) -> dict | None:
     if excluded_by_title(title, config.get("exclude_title_terms", [])):
         return None
     if not passes_location_filter(item, config):
+        return None
+
+    max_age_days = int(config.get("max_posting_age_days", MAX_POSTING_AGE_DAYS_DEFAULT))
+    age = posting_age_days(posted_at_of(item))
+    if age is not None and age > max_age_days:
         return None
 
     target_roles = config.get("target_roles", [])
@@ -197,20 +272,26 @@ def score_item(item: dict, config: dict, max_raw: int) -> dict | None:
     if normalized < int(config.get("min_match_score", 0)):
         return None
 
+    company = item.get("companyName") or item.get("company") or ""
+    location = item.get("location") or ""
+    source = item.get("source", "LinkedIn")
+    apply_link = item.get("link") or item.get("jobUrl") or item.get("applyUrl") or ""
+
     return {
         "match_score": normalized,
-        "source": item.get("source", "LinkedIn"),
+        "posting_id": make_posting_id(apply_link, company, title, location, source),
+        "source": source,
         "job_title": title,
-        "company": item.get("companyName") or item.get("company") or "",
-        "location": item.get("location") or "",
+        "company": company,
+        "location": location,
         "experience_required": item.get("experienceLevel") or item.get("seniorityLevel") or "",
         "seniority": item.get("seniorityLevel") or "",
         "employment_type": item.get("employmentType") or "",
         "skills_matched": ", ".join(sorted(set(matched))),
-        "posted": item.get("postedTime") or item.get("postedAt") or item.get("listedAt") or "",
+        "posted": posted_at_of(item),
         "applicants": item.get("applicantsCount") or item.get("applicants") or "",
         "job_description": description,
-        "apply_link": item.get("link") or item.get("jobUrl") or item.get("applyUrl") or "",
+        "apply_link": apply_link,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -237,9 +318,18 @@ def main() -> int:
     scored = [row for item in deduped if (row := score_item(item, config, max_raw))]
     scored.sort(key=lambda r: r["match_score"], reverse=True)
 
+    posting_ids = [row["posting_id"] for row in scored]
+    duplicate_ids = len(posting_ids) - len(set(posting_ids))
+    if duplicate_ids:
+        print(f"WARNING: {duplicate_ids} posting_id collision(s) detected among scored rows", file=sys.stderr)
+    unknown_age = sum(1 for row in scored if posting_age_days(row["posted"]) is None and row["posted"])
+
     args.scored_out.parent.mkdir(parents=True, exist_ok=True)
     args.scored_out.write_text(json.dumps(scored, indent=2, ensure_ascii=False))
-    print(f"Scored {len(scored)} postings out of {len(deduped)} unique (of {len(raw)} raw) → {args.scored_out}")
+    print(
+        f"Scored {len(scored)} postings out of {len(deduped)} unique (of {len(raw)} raw) → {args.scored_out} "
+        f"({len(set(posting_ids))} distinct posting IDs verified, {unknown_age} had unknown post date and were kept)"
+    )
     return 0
 
 
