@@ -270,6 +270,15 @@ def main() -> int:
     parser.add_argument("--scored-in", required=True, type=Path)
     parser.add_argument("--template", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument(
+        "--only-posting-ids",
+        default=None,
+        help=(
+            "comma-separated posting_ids to generate. Explicit selection BYPASSES "
+            "resume_tailoring_min_score -- an explicit ask beats the threshold, which "
+            "is what makes below-threshold picks and manual JDs work."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.profile.exists():
@@ -286,7 +295,16 @@ def main() -> int:
         return 1
 
     threshold = int(config.get("resume_tailoring_min_score", DEFAULT_MIN_SCORE))
-    qualifying = [item for item in scored if int(item.get("match_score", 0)) > threshold]
+    if args.only_posting_ids:
+        wanted = {s.strip() for s in args.only_posting_ids.split(",") if s.strip()}
+        qualifying = [item for item in scored if item.get("posting_id") in wanted]
+        missing = wanted - {item.get("posting_id") for item in scored}
+        if missing:
+            print(f"WARNING: no posting found for id(s): {', '.join(sorted(missing))}", file=sys.stderr)
+        selection_note = f"{len(qualifying)} explicitly selected (threshold bypassed)"
+    else:
+        qualifying = [item for item in scored if int(item.get("match_score", 0)) > threshold]
+        selection_note = f"of {len(scored)} postings scoring > {threshold}"
 
     # Nest under <out-dir>/<YYYY-MM>/<YYYY-MM-DD>/ rather than dumping every run's
     # PDFs flat -- same date-ownership pattern push_to_sheets.py uses for tab_name.
@@ -294,7 +312,7 @@ def main() -> int:
     run_dir = args.out_dir / today.strftime("%Y-%m") / today.isoformat()
 
     if not qualifying:
-        print(f"Generated 0 tailored resumes (of {len(scored)} postings scoring > {threshold}) → {run_dir}")
+        print(f"Generated 0 tailored resumes ({selection_note}) → {run_dir}")
         return 0
 
     if find_latex_engine() is None:
@@ -343,8 +361,7 @@ def main() -> int:
         generated += 1
 
     print(
-        f"Generated {generated} tailored resumes (of {len(qualifying)} postings scoring > {threshold}, "
-        f"{failures} failed) → {run_dir}"
+        f"Generated {generated} tailored resumes ({selection_note}, {failures} failed) → {run_dir}"
     )
     return 0
 

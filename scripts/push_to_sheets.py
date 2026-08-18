@@ -39,6 +39,8 @@ HEADERS = [
     "Job Description",
     "Apply Link",
     "Fetched At",
+    "Posting ID",
+    "New Since Last Run",
 ]
 
 FIELD_ORDER = [
@@ -56,6 +58,8 @@ FIELD_ORDER = [
     "job_description",
     "apply_link",
     "fetched_at",
+    "posting_id",
+    "new_since_last_run",
 ]
 
 SCOPES = [
@@ -93,6 +97,34 @@ def get_or_create_tab(spreadsheet, tab_name: str, cols: int):
         return spreadsheet.worksheet(tab_name)
     except gspread.WorksheetNotFound:
         return spreadsheet.add_worksheet(title=tab_name, rows=1000, cols=cols)
+
+
+def find_previous_tab(spreadsheet, before_tab_name: str):
+    """Most recent date-named tab strictly before before_tab_name -- naturally
+    excludes the "Applications" tab and anything else non-date-named, since
+    date.fromisoformat() rejects them. ISO date strings sort lexicographically,
+    so plain string comparison is enough."""
+    candidates = []
+    for ws in spreadsheet.worksheets():
+        try:
+            date.fromisoformat(ws.title)
+        except ValueError:
+            continue
+        if ws.title < before_tab_name:
+            candidates.append(ws)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda ws: ws.title)
+
+
+def previous_posting_ids(ws) -> set[str] | None:
+    """Posting IDs from a previous tab, or None if that tab predates this
+    column (schema mismatch) -- comparison is skipped, not guessed, in that case."""
+    values = ws.get_all_values()
+    if not values or values[0] != HEADERS:
+        return None
+    id_col = FIELD_ORDER.index("posting_id")
+    return {_row_value(row, id_col) for row in values[1:] if _row_value(row, id_col)}
 
 
 def _row_value(row: list, idx: int) -> str:
@@ -169,8 +201,25 @@ def main() -> int:
     spreadsheet = open_sheet(creds, sheet_id)
     ws = get_or_create_tab(spreadsheet, tab_name, cols=len(HEADERS))
 
-    existing = ws.get_all_values()
+    # Cross-sheet comparison: is each of today's postings new since the most
+    # recent previous date tab, or already seen? Pure visibility/audit -- every
+    # posting still gets written either way, nothing is dropped based on this.
+    previous_tab = find_previous_tab(spreadsheet, tab_name)
+    previous_ids = previous_posting_ids(previous_tab) if previous_tab else None
+    new_col = FIELD_ORDER.index("new_since_last_run")
+    id_col = FIELD_ORDER.index("posting_id")
+
     new_field_rows = rows_from_scored(scored)
+    new_count = seen_count = 0
+    for row in new_field_rows:
+        if previous_ids is not None and _row_value(row, id_col) in previous_ids:
+            row[new_col] = "No"
+            seen_count += 1
+        else:
+            row[new_col] = "Yes"
+            new_count += 1
+
+    existing = ws.get_all_values()
     merged = merge_rows(existing, new_field_rows)
 
     ws.clear()
@@ -179,7 +228,16 @@ def main() -> int:
 
     prior = max(0, len(existing) - 1) if existing and existing[0] == HEADERS else 0
     sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={ws.id}"
-    print(f"Wrote {len(merged)} rows to tab '{tab_name}' (this run: {len(new_field_rows)}, prior in tab: {prior})")
+    if previous_tab is not None and previous_ids is not None:
+        comparison = f"vs '{previous_tab.title}': {new_count} new, {seen_count} already seen"
+    elif previous_tab is not None:
+        comparison = f"no comparable previous sheet (tab '{previous_tab.title}' predates Posting ID column)"
+    else:
+        comparison = "no comparable previous sheet found"
+    print(
+        f"Wrote {len(merged)} rows to tab '{tab_name}' (this run: {len(new_field_rows)}, prior in tab: {prior}) "
+        f"[{comparison}]"
+    )
     print(sheet_url)
     return 0
 
