@@ -2,6 +2,11 @@
 resumes/
 outputs/
 configs/*.json
+!configs/companies.json
+context/*.md
+archives/*
+!archives/.gitkeep
+.claude/settings.local.json
 
 __pycache__/
 *.py[cod]

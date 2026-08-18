@@ -46,15 +46,12 @@ def _normalize_location(loc) -> dict:
 
 def build_search_urls(config: dict) -> list[str]:
     loc = _normalize_location(config.get("location", {}))
-    city = (loc.get("city") or "").strip()
     region = (loc.get("region") or "").strip()
     country = (loc.get("country") or "Canada").strip()
-    radius_km = int(loc.get("radius_km", 100))
     include_remote = bool(loc.get("include_remote_in_country", True))
 
-    local_parts = [p for p in (city, region, country) if p]
-    local_location = ", ".join(local_parts) if local_parts else country
-    distance_mi = max(1, round(radius_km * 0.621371))
+    province_parts = [p for p in (region, country) if p]
+    province_location = ", ".join(province_parts) if province_parts else country
 
     seniority_codes = config.get("seniority_filter_codes", [])
     seniority_param = ",".join(str(c) for c in seniority_codes)
@@ -72,7 +69,7 @@ def build_search_urls(config: dict) -> list[str]:
 
     urls: list[str] = []
     for role in config["target_roles"]:
-        urls.append(_url(role, local_location, [f"distance={distance_mi}"]))
+        urls.append(_url(role, province_location, []))
         if include_remote:
             urls.append(_url(role, country, ["f_WT=2"]))
     return urls
@@ -101,13 +98,25 @@ def start_run(token: str, config: dict) -> str:
 
 def wait_for_run(token: str, run_id: str) -> dict:
     deadline = time.time() + POLL_TIMEOUT_SECONDS
+    transient_failures = 0
     while True:
-        resp = requests.get(
-            f"{APIFY_BASE}/actor-runs/{run_id}",
-            params={"token": token},
-            timeout=30,
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.get(
+                f"{APIFY_BASE}/actor-runs/{run_id}",
+                params={"token": token},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            transient_failures = 0
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code >= 500:
+                transient_failures += 1
+                if transient_failures > 5:
+                    raise
+                print(f"  transient {e.response.status_code}, retrying ({transient_failures}/5)...")
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+            raise
         run = resp.json()["data"]
         status = run["status"]
         print(f"  run {run_id} status={status}")
@@ -159,23 +168,30 @@ def filter_live_listings(items: list[dict], delay_seconds: float = 1.0) -> list[
     session = requests.Session()
     session.headers.update({"User-Agent": LINKEDIN_UA})
 
+    total = len(items)
+    print(f"Verifying {total} listings...", flush=True)
     kept: list[dict] = []
     dropped = 0
     unknown = 0
-    for item in items:
+    for i, item in enumerate(items, start=1):
         job_id = _extract_job_id(item.get("link") or "")
         if not job_id:
             unknown += 1
             kept.append(item)
-            continue
-        live = _is_listing_live(job_id, session)
-        if live is False:
-            dropped += 1
-            continue
-        if live is None:
-            unknown += 1
-        kept.append(item)
-        time.sleep(delay_seconds)
+        else:
+            live = _is_listing_live(job_id, session)
+            if live is False:
+                dropped += 1
+            else:
+                if live is None:
+                    unknown += 1
+                kept.append(item)
+            time.sleep(delay_seconds)
+        if i % 25 == 0 or i == total:
+            print(
+                f"  [{i}/{total}] kept={len(kept)} dropped={dropped} unknown={unknown}",
+                flush=True,
+            )
     print(f"Verified listings: kept {len(kept)} (dropped {dropped} closed, {unknown} unknown)")
     return kept
 

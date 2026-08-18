@@ -1,0 +1,32 @@
+{
+  "_audit_note": "ats/tenant/shard/site values below were verified via web search against each company's actual myworkdayjobs.com URLs, not guessed. Entries marked \"custom\" or \"unverified\" have no confirmed Greenhouse/Lever/Workday API yet -- fetch_companies.py skips them (logs and continues) rather than failing the run. Re-run the audit for those before expecting coverage from them.",
+  "companies": [
+    {"name": "RBC", "ats": "workday", "tenant": "rbc", "shard": "wd3", "site": "RBCGLOBAL1"},
+    {"name": "TD Bank", "ats": "workday", "tenant": "td", "shard": "wd3", "site": "TD_Bank_Careers"},
+    {"name": "Manulife", "ats": "workday", "tenant": "manulife", "shard": "wd3", "site": "MFCJH_Jobs"},
+    {"name": "Loblaw Companies", "ats": "workday", "tenant": "myview", "shard": "wd3", "site": "loblaw_careers"},
+    {"name": "Enbridge", "ats": "workday", "tenant": "enbridge", "shard": "wd3", "site": "enbridge_careers"},
+    {"name": "TC Energy", "ats": "workday", "tenant": "tcenergy", "shard": "wd3", "site": "CAREER_SITE_TC"},
+
+    {"name": "Shopify", "ats": "custom", "note": "unverified — custom careers.shopify.com, no Greenhouse/Lever board found"},
+    {"name": "Scotiabank", "ats": "custom", "note": "unverified — appears to use SAP SuccessFactors (career17.sapsf.com), not Greenhouse/Lever/Workday; no fetcher for that platform yet"},
+    {"name": "BMO", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "CIBC", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "National Bank of Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Sun Life", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Home Depot Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Canadian Tire", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Metro Inc.", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "TELUS", "ats": "custom", "note": "unverified — corporate TELUS careers doesn't cleanly resolve to one Workday tenant; only TELUS International/TELUS Health subsidiaries were found on Workday during audit"},
+    {"name": "Rogers Communications", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Bell (BCE)", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "OpenText", "ats": "custom", "note": "unverified — search only surfaced other companies' postings mentioning OpenText as a skill, not OpenText's own Workday tenant"},
+    {"name": "CGI", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Deloitte Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "PwC Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "EY Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "KPMG Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Air Canada", "ats": "custom", "note": "unverified — needs audit"},
+    {"name": "Suncor Energy", "ats": "custom", "note": "unverified — needs audit"}
+  ]
+}

@@ -5,3 +5,4 @@ pdfplumber
 gspread
 google-auth
 python-dotenv
+pyyaml

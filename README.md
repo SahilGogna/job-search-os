@@ -2,51 +2,76 @@
 
 ## What we're building
 
-A local Python project that turns a resume PDF into a live list of matching job postings in a Google Sheet. No deployment. No external LLM calls. Claude Code is the reasoning layer.
+A local Python project that turns a resume PDF into a live list of matching job postings — from LinkedIn *and* company career sites — in a Google Sheet, plus a tailored resume PDF for every strong match and a read-only tracker of what happened to each application. No deployment. No external LLM calls. Claude Code is the reasoning layer.
 
 ## How it works end to end
 
-1. Drop a resume PDF into `resumes/`
-2. Open Claude Code in this project folder and say something like: *"find jobs for hargun.pdf"*
-3. Claude Code reads the PDF itself, figures out target roles, skills, location, and years of experience
-4. Claude Code writes a config file to `configs/<name>.json` with the search plan
-5. Claude Code runs `scripts/fetch_jobs.py`, which calls Apify's LinkedIn Jobs Scraper (Curious Coder), filtered to the last 24 hours
-6. Claude Code runs `scripts/score_jobs.py`, which filters and ranks postings against the config
-7. Claude Code runs `scripts/push_to_sheets.py`, which appends the ranked list to a Google Sheet
-8. Claude Code prints the sheet URL
+1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan).
+2. From then on, just say *"find jobs for me"* — the **job-search** skill runs:
+   - `scripts/fetch_jobs.py`, which calls Apify's LinkedIn Jobs Scraper (Curious Coder), filtered to the last 24 hours
+   - `scripts/fetch_companies.py` (if `configs/companies.json` exists), which hits company career sites directly — Greenhouse, Lever, and Workday's public JSON APIs
+   - `scripts/score_jobs.py`, which merges both sources, dedupes across them, and ranks postings against `configs/search.json`
+   - `scripts/push_to_sheets.py`, which appends the ranked list to a Google Sheet
+   - `scripts/generate_resumes.py`, which generates a tailored PDF resume (from `templates/resume_template.tex`) for every posting scoring above `resume_tailoring_min_score`
+3. Claude Code prints the sheet URL and a one-line summary.
+4. Got a new/updated resume later? Just give it to Claude Code — the onboard skill re-runs, diffs it against your existing profile, and asks what to accept before changing anything.
+5. Anytime, say *"check my applications"* — the **application-tracker** skill does a read-only scan of Gmail for application-related emails (confirmations, interviews, offers, rejections), classifies each one, and upserts the result into a dedicated **Applications** tab in the same sheet. It never modifies Gmail — no labels, no message changes, read-only.
 
 ## Why this design
 
 * Claude Code does the resume parsing and search planning natively. No OpenAI or Anthropic API call from inside the code. The scripts are dumb: they consume a config and produce data
-* Every step is inspectable. If a run pulls weak results, open `configs/<name>.json` and see exactly what Claude Code decided
+* Onboarding happens once, not on every search — your profile persists in `context/profile.md` instead of being re-derived from the PDF each time
+* Every step is inspectable. If a run pulls weak results, open `configs/search.json` and see exactly what Claude Code decided
+* Sources are portal-agnostic by design: every fetcher tags a `source` field and produces the same raw item shape, so `score_jobs.py`/`push_to_sheets.py` never needed to change to support company career sites alongside LinkedIn
 * Google Sheets is the deliverable so you can filter, sort, and share without opening Excel
+* Resume tailoring only reorders/emphasizes content already in your profile — it never invents experience
 
 ## Tech stack
 
 * Python 3.11 or newer
 * Apify REST API (Curious Coder LinkedIn Jobs Scraper)
+* Greenhouse, Lever, and Workday public JSON APIs for company career sites
 * Google Sheets API via service account
 * `pdfplumber` for reading resumes
 * `pandas` for data handling
 * `gspread` and `google-auth` for Sheets writes
+* `pyyaml` for reading `context/profile.md`'s structured data
+* A LaTeX engine (`tectonic` or `pdflatex`) for compiling tailored resumes
 
 ## Project structure
 
 ```
 job-hunter/
-  CLAUDE.md              instructions Claude Code reads on every session
-  README.md              same as this brief, for humans
-  example.env            template with placeholders — copy to .env and fill in
-  .env                   APIFY_TOKEN, JSON_KEY_BASE_64, SHEET_ID (never committed)
-  .gitignore             ignores .env, resumes/, outputs/
+  CLAUDE.md                short manifest — points at the skills below
+  .claude/skills/
+    onboard/SKILL.md               one-time (or re-run) profile setup
+    job-search/SKILL.md            the recurring fetch → score → push → tailor flow
+    application-tracker/SKILL.md    read-only Gmail scan → Applications tab
+  README.md                same as this brief, for humans
+  example.env              template with placeholders — copy to .env and fill in
+  .env                     APIFY_TOKEN, JSON_KEY_BASE_64, SHEET_ID (never committed)
+  .gitignore               ignores .env, resumes/, outputs/, context/*.md, archives/, configs/search.json
   requirements.txt
-  resumes/               drop PDFs here
-  configs/               one JSON per resume, generated by Claude Code
+  resumes/                  your resume PDF lives here (resume.pdf)
+  context/
+    profile.md               your full profile — identity, history, skills (gitignored, contains PII)
+  configs/
+    search.json                derived search plan, generated by the onboard skill (gitignored, personal)
+    companies.json              target companies + their ATS platform for direct career-site fetching (tracked — not personal data)
+  templates/
+    resume_template.tex        LaTeX template the tailoring step fills in
+    resume.cls                  its document class (FAANGPath / Trey Hunner format)
+  archives/                  safety snapshots of profile.md/search.json before a re-onboard; gmail_scan_state.json
   scripts/
-    fetch_jobs.py        calls Apify, returns raw JSON
-    score_jobs.py        filters and ranks against config
-    push_to_sheets.py    appends to the Google Sheet
-  outputs/               optional local xlsx backup per run
+    fetch_jobs.py                 calls Apify, returns raw JSON
+    fetch_companies.py             calls Greenhouse/Lever/Workday APIs directly, returns raw JSON
+    score_jobs.py                 merges sources, dedupes, filters and ranks against config
+    push_to_sheets.py             appends to the Google Sheet (date-based job tabs)
+    generate_resumes.py            renders tailored PDFs for strong matches
+    update_application_tracker.py   upserts Gmail-derived status into the Applications tab
+  outputs/
+    raw_linkedin.json, raw_companies.json, scored.json    per-run data
+    tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/                generated PDFs (gitignored, contains PII)
 ```
 
 ## One-time setup
@@ -73,19 +98,31 @@ Copy `example.env` to `.env` and fill in the three values below.
 
 The JSON key file itself never lives on disk in this project — only its base64 form in `.env`.
 
+### LaTeX engine (for tailored resumes)
+
+Install one of:
+```
+brew install tectonic      # preferred — self-contained, no full TeX Live needed
+```
+or use an existing `pdflatex` install (e.g. MacTeX). The job-search skill checks for either automatically and tells you if neither is found.
+
+### Your own resume template (optional)
+
+`templates/resume_template.tex` ships with a working default (FAANGPath / Trey Hunner `resume.cls` format). Swap in your own `.tex` design any time — just keep the placeholder tokens documented in that file's header comment (`FULL_NAME`, `SUMMARY`, `SKILLS_LIST`, `EXPERIENCE_BLOCK`, etc.) and drop any custom `.cls`/`.sty` files in `templates/` alongside it.
+
 ## Config file schema
 
-Claude Code generates this per resume. Example:
+The onboard skill generates this from your profile. Example:
 
 ```json
 {
-  "candidate_name": "Hargun Lamba",
+  "candidate_name": "Jane Doe",
   "target_roles": ["Data Analyst", "BI Analyst", "Business Intelligence Analyst", "Analytics Engineer", "Junior Data Analyst", "Reporting Analyst"],
   "location": {
     "city": "Toronto",
     "region": "Ontario",
     "country": "Canada",
-    "radius_km": 100,
+    "region_aliases": ["Ontario", "ON"],
     "include_remote_in_country": true
   },
   "experience_years": 2,
@@ -94,6 +131,7 @@ Claude Code generates this per resume. Example:
   "title_match_bonus": 6,
   "require_title_match": false,
   "min_match_score": 50,
+  "resume_tailoring_min_score": 60,
   "core_skills": {
     "python":    {"weight": 3, "variants": ["python", "pandas", "numpy"]},
     "sql":       {"weight": 3, "variants": ["sql", "mysql", "postgres"]},
@@ -108,7 +146,27 @@ Claude Code generates this per resume. Example:
 }
 ```
 
-`location` is an object: `radius_km` (default 100) sets the geographic radius from `city, region, country`, and `include_remote_in_country` (default true) also pulls remote postings anywhere in that country. `title_match_bonus` (default 6) is added when the job title contains any of the `target_roles` phrases — bump higher to make title alignment dominate. Set `require_title_match: true` to hard-drop postings whose titles don't match.
+`location.region_aliases` lists spelling variants of the province LinkedIn may use in posting-location strings (e.g. `["Ontario", "ON"]`) — used to keep only postings in that province, plus remote postings anywhere in `country` when `include_remote_in_country` is true. `title_match_bonus` (default 6) is added when the job title contains any of the `target_roles` phrases — bump higher to make title alignment dominate. Set `require_title_match: true` to hard-drop postings whose titles don't match. `resume_tailoring_min_score` (default 60) is the threshold above which `generate_resumes.py` produces a tailored PDF.
+
+## Company career-site config (`configs/companies.json`)
+
+Optional. If present, `job-search` also fetches postings directly from these companies' own career sites, alongside LinkedIn. Schema:
+
+```json
+{
+  "results_per_company": 30,
+  "companies": [
+    {"name": "RBC", "ats": "workday", "tenant": "rbc", "shard": "wd3", "site": "RBCGLOBAL1"},
+    {"name": "Some Startup", "ats": "greenhouse", "token": "somestartup"},
+    {"name": "Another Co", "ats": "lever", "org": "anotherco"},
+    {"name": "No API Co", "ats": "custom", "note": "no public API found — skipped at fetch time"}
+  ]
+}
+```
+
+`ats` selects the fetcher: `greenhouse` needs `token` (the `boards.greenhouse.io/<token>` slug), `lever` needs `org` (the `jobs.lever.co/<org>` slug), `workday` needs `tenant` + `shard` + `site` (from that company's `https://<tenant>.<shard>.myworkdayjobs.com/<site>` careers URL). Anything else (including `custom`) is skipped — logged, not fatal.
+
+**Finding these values for a new company**: visit its careers page and watch the network tab, or search for `"<company> careers myworkdayjobs.com"` / check if `boards.greenhouse.io/<guess>` or `jobs.lever.co/<guess>` resolves. Don't guess and commit a value you haven't confirmed — a wrong tenant/token just 404s silently at fetch time (logged as a per-company failure, not caught any other way). The starter list shipped in this repo has each Workday entry verified this way; several other major employers are still marked `"custom"` pending that same check.
 
 ## Listing verification
 
@@ -117,6 +175,29 @@ Apify's search-page scraper doesn't tell us whether a posting is still accepting
 ## Match Score
 
 The Sheet's Match Score column is a **0–100 percentage**: `round((skill_weights_matched + title_bonus − experience_penalty) / (sum_of_all_skill_weights + title_match_bonus) × 100)`. 100 means a posting matched every core skill and its title contained a target-role phrase with no over-experience penalty. Postings that score below the config's `min_match_score` (default 50) are dropped before the sheet write.
+
+## Resume tailoring
+
+For every scored posting above `resume_tailoring_min_score` (default 60), `scripts/generate_resumes.py`:
+
+1. Reads the candidate's full profile from `context/profile.md`'s YAML frontmatter
+2. Reorders the skills list and each role's bullets so ones overlapping that posting's matched skills surface first — deterministic keyword matching, no LLM calls, never rewrites or invents content
+3. Fills `templates/resume_template.tex`'s placeholder tokens with the reordered content
+4. Compiles it to a PDF via `tectonic` (or `pdflatex`) into `outputs/tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/`
+
+Filenames are `<company>_<job-title>_<posting-id>.pdf`, nested by month then day so runs don't pile up in one flat folder — same date-ownership pattern `push_to_sheets.py` uses for its tab names. The intermediate `.tex` files are kept alongside in that day's `tex/` subfolder for inspection.
+
+## Application tracker
+
+Independent of job-search — run any time by saying "check my applications". The `application-tracker` skill:
+
+1. Searches Gmail broadly for application-signal emails (keywords + known ATS/recruiting sender domains), scoped to since the last scan (`archives/gmail_scan_state.json`) or the last 90 days on first run
+2. Reads each plausible thread in full and classifies it itself — Company, Role, Status (`Applied`, `Under Review`, `Assessment`, `Interview`, `Offer`, `Rejected`, `Withdrawn`, `Other`) — no fixed keyword-to-status mapping, judgment call on real content
+3. Upserts the results into a dedicated **Applications** tab via `scripts/update_application_tracker.py`, keyed by Gmail thread link — re-scanning the same thread updates its row instead of duplicating it
+
+**This is read-only.** It only calls Gmail's `search_threads`/`get_thread` — never `label_thread`, `label_message`, `create_label`, or any other mutation. Your inbox is never modified, only read.
+
+The Applications tab is entirely separate from the date-based job-search tabs (`2026-07-21`, etc.) and from `push_to_sheets.py`'s merge logic — it's its own tab, own schema, own script.
 
 ## Google Sheet layout
 
@@ -141,16 +222,20 @@ Header row bold, freeze first row, filter on all columns, sorted by Match Score 
 
 **Same-day re-runs merge into the existing tab.** Rows are keyed by apply link — new postings are appended, and postings that already appear are refreshed with the latest score/details. A new calendar day starts a fresh tab. If the tab's header row doesn't match the current schema (e.g., after a code update that adds a column), the existing rows are discarded and the tab is rewritten with just the current run's data — no half-schema stitching.
 
-**Source** is tagged at fetch time (`LinkedIn` today), so adding other job portals later just means a new fetch script that tags `Source` differently — score/push code stays unchanged.
+**Source** is tagged at fetch time (`LinkedIn`, or `<Company> Careers` for direct career-site postings), so adding another portal later just means a new fetch script that tags `Source` differently — score/push code stays unchanged. The **Applications** tab (see above) is a separate, non-date-named tab in the same spreadsheet — not part of this rotation.
 
 ## First message to Claude Code
 
 Open Claude Code in the project folder and say:
 
-> Set up this project according to README.md. Create CLAUDE.md, requirements.txt, .gitignore, and the three scripts in scripts/. Do not run anything yet. Ask me before creating credentials.json or the .env file.
+> Onboard me — here's my resume.
 
-Once files exist, drop a resume in `resumes/` and say:
+(attach your fullest resume PDF). Once your profile exists, just say:
 
-> Find jobs for hargun.pdf
+> Find jobs for me
+
+And whenever you want a status check:
+
+> Check my applications
 
 That's the whole loop.
