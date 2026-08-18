@@ -6,15 +6,14 @@ A local Python project that turns a resume PDF into a live list of matching job 
 
 ## How it works end to end
 
-1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan). It also asks whether you want Gmail application tracking enabled — say yes and it runs an initial scan right there.
+1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan). It then invokes the **connections** skill, which walks you through `.env` (`APIFY_TOKEN`, `JSON_KEY_BASE_64`, `SHEET_ID`) one value at a time and confirms Gmail is connected — never blocking the rest of setup if you'd rather finish it later. Finally it asks whether you want Gmail application tracking enabled — say yes and it runs an initial scan right there.
 2. From then on, just say *"find jobs for me"* — the **job-search** skill runs:
    - `scripts/fetch_jobs.py`, which calls Apify's LinkedIn Jobs Scraper (Curious Coder), filtered to the last 24 hours
    - `scripts/fetch_companies.py` (if `configs/companies.json` exists), which hits company career sites directly — Greenhouse, Lever, and Workday's public JSON APIs
    - `scripts/score_jobs.py`, which merges both sources, dedupes across them, and ranks postings against `configs/search.json`
    - `scripts/push_to_sheets.py`, which appends the ranked list to a Google Sheet
-   - `scripts/generate_resumes.py`, which generates a tailored PDF resume (from `templates/resume_template.tex`) for every posting scoring above `resume_tailoring_min_score`
-3. Claude Code prints the sheet URL and a one-line summary.
-4. Got a new/updated resume later? Just give it to Claude Code — the onboard skill re-runs, diffs it against your existing profile, and asks what to accept before changing anything.
+3. Claude Code prints the sheet URL and a one-line summary, then offers resumes — say yes and the **tailor-resumes** skill takes over: pick all, the top N, everything above a bar, or specific postings. You can also paste a JD for a job found anywhere else and get a resume for that. Kept separate from the search on purpose: by the time it runs, your results are already safely in the sheet.
+4. Got a new cert, a new project, or a new resume? Say so — the **update-profile** skill handles all of it: small edits applied directly, a new resume PDF parsed and diffed against your profile so you can accept only what you want.
 5. Anytime, say *"check my applications"* (or "update my dashboard") — the **application-tracker** skill does a read-only scan of Gmail for application-related emails (confirmations, interviews, offers, rejections), classifies each one, upserts the result into a dedicated **Applications** tab, and republishes a private **dashboard** (counts + "time to follow up" / "send a thank-you" flags) as a Claude Artifact at a stable URL. This dashboard is entirely independent of the job-postings Sheet — it's built purely from Gmail, doesn't know or care what's in the Sheet. It never modifies Gmail — no labels, no message changes, no drafted/sent emails, read-only.
 
 ## Why this design
@@ -44,9 +43,14 @@ A local Python project that turns a resume PDF into a live list of matching job 
 job-hunter/
   CLAUDE.md                short manifest — points at the skills below
   .claude/skills/
-    onboard/SKILL.md               one-time (or re-run) profile setup + Gmail tracking opt-in
-    job-search/SKILL.md            the recurring fetch → score → push → tailor flow
+    onboard/SKILL.md               first run only: resume → profile + config, then connections
+    update-profile/SKILL.md         every later change: a cert, a project, or a new resume
+    connections/SKILL.md            .env setup + live verification; Gmail connector check
+    job-search/SKILL.md            asks sources → fetch → score → sheet (then offers resumes)
+    tailor-resumes/SKILL.md         resume PDFs from a search, or from a pasted JD
     application-tracker/SKILL.md    read-only Gmail scan → Applications tab → dashboard Artifact
+  references/
+    profile-schema.md               profile schema + parsing/derivation rules (shared, single copy)
   README.md                same as this brief, for humans
   connections.md            registry of every external system this project reaches (script vs mcp)
   decisions/log.md          append-only record of meaningful design decisions and why
@@ -72,6 +76,9 @@ job-hunter/
     generate_resumes.py            renders tailored PDFs for strong matches
     update_application_tracker.py   upserts Gmail-derived status into the Applications tab
     build_dashboard_data.py         aggregates the Applications tab into dashboard counts + flags
+    check_connections.py            reports connection status — never prints a secret value
+    set_env_value.py                the only writer of .env (stdin / --from-file-base64)
+    make_manual_posting.py          a pasted JD → one scored row, for tailor-resumes
   outputs/
     raw_linkedin.json, raw_companies.json, scored.json    per-run data
     dashboard_data.json                                     computed dashboard summary (input to the Artifact)
@@ -79,6 +86,10 @@ job-hunter/
 ```
 
 ## One-time setup
+
+The `/connections` skill (invoked automatically by `/onboard`, or run standalone anytime — "set up my API keys") walks you through this interactively, one value at a time, and validates each with a real call rather than trusting it blindly. What follows is the manual version, for reference or if you'd rather do it yourself.
+
+**How secrets are handled:** Claude never reads `.env` — not even to check whether a key is set. Status comes from `scripts/check_connections.py`, which prints only `valid` / `invalid` / `missing`; writes go through `scripts/set_env_value.py`, which takes the value on stdin (never the command line, which is visible in process listings) or base64-encodes a service-account JSON file in-process so the credential never appears in a terminal. `Read` on `.env` is denied outright in `.claude/settings.local.json`.
 
 Copy `example.env` to `.env` and fill in the three values below.
 
@@ -91,11 +102,11 @@ Copy `example.env` to `.env` and fill in the three values below.
 1. Google Cloud Console — create a project (or reuse an existing one)
 2. Enable the Google Sheets API and Google Drive API
 3. Create a service account, generate a JSON key, download the JSON file
-4. Base64-encode the key file and paste the result into `.env` as `JSON_KEY_BASE_64`:
+4. Store the key — just give `/connections` the file path and it encodes it in-process:
    ```
-   base64 -i path/to/service-account.json | tr -d '\n' | pbcopy
+   python scripts/set_env_value.py --key JSON_KEY_BASE_64 --from-file-base64 path/to/service-account.json
    ```
-   (on macOS `pbcopy` puts it on the clipboard; on Linux drop the `pbcopy` and copy manually)
+   (Doing this by hand with `base64 ... | pbcopy` also works, but the encoded blob *is* the credential — the script avoids putting it on a clipboard or a terminal.)
 5. Create a new Google Sheet called something like "Job Hunter Results"
 6. Share the sheet with the service account email (the `client_email` field in the JSON key), give it Editor access
 7. Copy the Sheet ID from the URL (`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`) into `.env` as `SHEET_ID`

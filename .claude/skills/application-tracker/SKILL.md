@@ -7,6 +7,12 @@ description: Use when the candidate wants to know the status of their job applic
 
 This skill **never** calls `label_thread`, `label_message`, `create_label`, `apply_sensitive_message_label`, `apply_sensitive_thread_label`, `unlabel_message`, or any other Gmail mutation tool. It only reads: `search_threads` and `get_thread`. This is an explicit, non-negotiable constraint the candidate set — the inbox itself is never touched, only read and summarized into the sheet.
 
+## Step 0 — Connections pre-flight
+
+Invoke the `connections` skill with scope `sheets`, and have it run the Gmail `list_labels` check too. Silent when everything's valid; only interactive if something's broken. **Never inspect `.env` yourself** — `connections` owns that.
+
+If Gmail isn't authorized, stop here and say so: this skill can't do anything without it. If Sheets is the problem, say that instead — the scan could run but there'd be nowhere to write results.
+
 ## Step 1 — Determine scan window
 
 Check for `archives/gmail_scan_state.json`:
@@ -78,6 +84,6 @@ Print a one-line summary including the dashboard: "Scanned N threads, tracked M 
 
 ## Prerequisites
 
-- `.venv/` must exist with `requirements.txt` installed (same as the job-search skill) — this skill's script reuses `push_to_sheets.py`'s credential-loading code.
-- `.env` must have `SHEET_ID` and `JSON_KEY_BASE_64` (the same Google service account used by `push_to_sheets.py`). If missing, stop and say which one.
+- `.venv/` must exist with `requirements.txt` installed (same as the job-search skill) — this skill's scripts reuse `push_to_sheets.py`'s credential-loading code.
+- Credentials are verified by the Step 0 pre-flight, not by inspecting `.env` here.
 - This skill does **not** require `context/profile.md` or `configs/search.json` — it's independent of onboarding/job-search and can run any time Gmail is connected.

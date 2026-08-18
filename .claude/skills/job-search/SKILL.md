@@ -1,23 +1,24 @@
 ---
 name: job-search
-description: Use when the candidate wants to run a job search — "find jobs for me", "run job search", "search for jobs", "what's new today". Requires context/profile.md and configs/search.json to already exist (run the onboard skill first if not). Fetches LinkedIn postings (and, if configs/companies.json exists, direct company career-site postings too), scores them against the profile, pushes results to Google Sheets, and generates tailored resumes for the best matches.
+description: Use when the candidate wants to run a job search — "find jobs for me", "run job search", "search for jobs", "what's new today". Requires context/profile.md and configs/search.json to already exist (run onboard first if not). Asks which sources to use, fetches LinkedIn and/or company career-site postings, scores them against the profile, and pushes results to Google Sheets. Ends at the sheet and offers to hand off to tailor-resumes — it does not generate resumes itself.
 ---
 
 ## Prerequisites
 
 1. `context/profile.md` and `configs/search.json` must both exist. If either is missing, tell the candidate to run onboarding first (say: "I don't have your profile yet — let's onboard you first") and stop. Do not improvise a config from a conversation alone.
 2. Ensure the project venv is ready: if `.venv/` doesn't exist, create it and `pip install -r requirements.txt`.
-3. Verify `.env` has `APIFY_TOKEN`, `JSON_KEY_BASE_64`, `SHEET_ID`. If any is missing, stop and tell the candidate exactly which one.
-4. Verify a LaTeX engine is on PATH (`tectonic` or `pdflatex`) for the resume-tailoring step below. If neither is found, try `brew install tectonic`. If that also fails, tell the candidate and continue without step 5 (fetch/score/push still run; tailoring is skipped) rather than blocking the whole search on a missing toolchain — say so explicitly in the summary line.
+3. **Connections pre-flight**: invoke the `connections` skill with scope `apify,sheets`. Credentials can expire or be revoked between runs, so this is checked every time — but it's silent when everything's fine, and only becomes a conversation if something's actually broken. **Never inspect `.env` yourself**; `connections` owns that entirely.
 
 If any of the required steps below fails, print the error and stop. Do not silently fall back or skip a required step without saying so.
 
 ## Steps
 
+0. **Ask which sources.** Every run, before fetching: *"LinkedIn only, company career sites only, or both?"* Skip this question entirely if `configs/companies.json` doesn't exist — there's nothing to choose between, so just use LinkedIn. Their answer decides which of steps 1 and 2 run.
+
 1. **Fetch — LinkedIn**: `python scripts/fetch_jobs.py --config configs/search.json --raw-out outputs/raw_linkedin.json`
    - Verifies each posting is still open by hitting `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/<id>` — a listing with no `top-card-layout__cta--primary` button is dropped as closed. Serial + 1s delay (~5 min for a few hundred postings). Disable with `"verify_listings": false` in the config only if a fast fetch is needed and closed listings will be filtered downstream. Postings the verifier can't reach are kept.
 
-2. **Fetch — company career sites** (optional): if `configs/companies.json` exists, also run `python scripts/fetch_companies.py --config configs/companies.json --raw-out outputs/raw_companies.json`. Hits each company's public Greenhouse/Lever/Workday API directly — companies with no confirmed API (`"ats": "custom"`) are skipped and logged, not fatal. If `configs/companies.json` doesn't exist, skip this step entirely and proceed with LinkedIn only — don't block the search on an optional source.
+2. **Fetch — company career sites** (if chosen in step 0): run `python scripts/fetch_companies.py --config configs/companies.json --raw-out outputs/raw_companies.json`. Hits each company's public Greenhouse/Lever/Workday API directly — companies with no confirmed API (`"ats": "custom"`) are skipped and logged, not fatal. If `configs/companies.json` doesn't exist, skip this step entirely and proceed with LinkedIn only — don't block the search on an optional source.
 
 3. **Score**: `python scripts/score_jobs.py --config configs/search.json --raw-in outputs/raw_linkedin.json [outputs/raw_companies.json] --scored-out outputs/scored.json`
    - `--raw-in` takes one or more paths — pass both files if step 2 ran, otherwise just the LinkedIn one.
@@ -31,10 +32,13 @@ If any of the required steps below fails, print the error and stop. Do not silen
    - Tab is date-based — a new day starts a fresh tab. Same-day re-runs **merge** into the existing tab keyed by apply link — the fresher row wins on collision.
    - Before writing, compares today's posting IDs against the most recent *previous* date tab (skips the "Applications" tab and any tab from before this feature shipped) and marks each row's `New Since Last Run` column `Yes`/`No` accordingly — pure visibility, nothing is dropped based on this. The summary line reports the counts, or says so explicitly if there's no comparable previous tab yet.
 
-5. **Tailor resumes**: `python scripts/generate_resumes.py --config configs/search.json --profile context/profile.md --scored-in outputs/scored.json --template templates/resume_template.tex --out-dir outputs/tailored_resumes`
-   - Generates one PDF per posting scoring above `resume_tailoring_min_score` (default 60) into `outputs/tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/`, reordering the candidate's existing skills/bullets toward that posting's matched keywords — never inventing content. Skip this step (with a note in the summary) if no LaTeX engine was found in Prerequisites.
+5. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites), kept N after scoring, wrote to tab `<date>` (P new since last sheet, Q already seen)."
 
-6. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites), kept N after scoring, tailored M resumes (score > 60), wrote to tab `<date>` (P new since last sheet, Q already seen)."
+6. **Offer resumes, don't generate them.** This skill ends at the sheet — the search results are banked and safe. Then hand off:
+
+   > *"8 of those score above 60. Want tailored resumes for any of them?"*
+
+   If yes, invoke the `tailor-resumes` skill (it handles selection, and owns the LaTeX-engine check). If no, stop — they can ask for resumes anytime later; `tailor-resumes` reads `outputs/scored.json` on its own.
 
 ## URL construction (what fetch_jobs.py does under the hood)
 

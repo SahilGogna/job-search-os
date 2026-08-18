@@ -75,6 +75,16 @@ def build_search_urls(config: dict) -> list[str]:
     return urls
 
 
+def _auth_headers(token: str) -> dict[str, str]:
+    """Apify auth as a Bearer header, never a `?token=` query param.
+
+    A token in the URL ends up inside requests' exception messages
+    ("401 Client Error ... for url: ...?token=<secret>"), which then get printed
+    to stderr and captured in logs. The header keeps it out of both.
+    """
+    return {"Authorization": f"Bearer {token}"}
+
+
 def start_run(token: str, config: dict) -> str:
     urls = build_search_urls(config)
     per_search = int(config.get("results_per_search", 50))
@@ -86,7 +96,7 @@ def start_run(token: str, config: dict) -> str:
     }
     resp = requests.post(
         f"{APIFY_BASE}/acts/{APIFY_ACTOR}/runs",
-        params={"token": token},
+        headers=_auth_headers(token),
         json=payload,
         timeout=90,
     )
@@ -103,7 +113,7 @@ def wait_for_run(token: str, run_id: str) -> dict:
         try:
             resp = requests.get(
                 f"{APIFY_BASE}/actor-runs/{run_id}",
-                params={"token": token},
+                headers=_auth_headers(token),
                 timeout=30,
             )
             resp.raise_for_status()
@@ -199,7 +209,8 @@ def filter_live_listings(items: list[dict], delay_seconds: float = 1.0) -> list[
 def fetch_dataset_items(token: str, dataset_id: str) -> list[dict]:
     resp = requests.get(
         f"{APIFY_BASE}/datasets/{dataset_id}/items",
-        params={"token": token, "format": "json", "clean": "true"},
+        headers=_auth_headers(token),
+        params={"format": "json", "clean": "true"},
         timeout=60,
     )
     resp.raise_for_status()

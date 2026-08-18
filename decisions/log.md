@@ -121,3 +121,53 @@ Append-only record of meaningful decisions and why they were made. Keep it terse
 **Alternatives considered:** External hosting (Cloudflare Pages/Workers) — considered at length; rejected for now given the added auth/secrets/hosting burden on sensitive personal data, with no corresponding benefit since neither option gets true live-sync anyway. Auto-drafting or auto-sending the thank-you email — explicitly declined by the candidate; stays a flag only.
 
 **Owner:** Sahil
+
+---
+
+## 2026-08-17 — Connections setup is its own skill, invoked by onboard but never blocking
+
+**Decision:** A dedicated `connections` skill owns `.env` setup (`APIFY_TOKEN`, `JSON_KEY_BASE_64`, `SHEET_ID`, one at a time) and Gmail MCP verification, with real validation checks (a live Apify ping, an actual `open_sheet()` call, a `list_labels` Gmail call) rather than just confirming a value exists. `onboard` invokes it right after writing `configs/search.json`, but it never blocks the rest of onboarding — a candidate can defer setup and finish later.
+
+**Why:** Requested explicitly — secrets setup is a distinct concern from resume parsing and deserves its own skill rather than being buried inline in onboarding. Validating live (not just checking a string is present) matters because a wrong/expired value would otherwise fail silently until the candidate's first real job-search run, at a much less convenient moment to debug it.
+
+**Alternatives considered:** Fold connections setup directly into `onboard`'s steps — rejected, conflates two different concerns and makes onboarding harder to re-run cleanly. Trust `.env` values without live validation — rejected, matches this repo's broader "verify, don't assume" pattern established earlier this session (e.g. the fabricated-Workday-IDs incident).
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-18 — Claude never touches `.env`; secrets move only through two scripts
+
+**Decision:** Claude must never read, `cat`, `grep`, or `sed` `.env` for any reason. Status comes out via `scripts/check_connections.py` (prints `valid`/`invalid`/`missing`, never a value); values go in via `scripts/set_env_value.py` (stdin or `--from-file-base64`, never argv). Enforced with `deny` rules on `Read(./.env*)` in `.claude/settings.local.json`.
+
+**Why:** An audit prompted by the user found four real problems. (1) `fetch_jobs.py` passed the Apify token as a **URL query parameter**, so any failed request produced a `requests` exception containing the full URL — token included — which printed to stderr and into logs. Fixed to an `Authorization: Bearer` header. (2) Three skills instructed Claude to read `.env` to check what was set, pulling every stored secret into context to answer a yes/no question. (3) The `connections` skill told Claude to run `base64 -i key.json` and paste the result — but that blob *is* the credential. Now encoded in-process by `set_env_value.py`. (4) No rule or enforcement existed at all.
+
+Also on the record, because guardrails should be designed against real failures rather than imagined ones: earlier in this same session Claude read `.env`, printed the Apify token's first six and last four characters, and interpolated the full token into a `curl` command line (exposing it in argv). **The user was advised to rotate `APIFY_TOKEN`.** Those three mistakes are precisely what the two-script boundary and the deny rules now prevent.
+
+**Alternatives considered:** Rely on a written instruction alone — rejected; a rule Claude has to remember is weaker than one the harness enforces. Passing values via `--value` on the command line — rejected; argv is visible in process listings and shell history. Honest limitation recorded: Bash-level deny patterns are defense-in-depth only, since a shell has many ways to read a file, so the written rule still carries real weight there.
+
+**Owner:** Sahil / Claude Code
+
+---
+
+## 2026-08-18 — Onboarding is first-run only; recurring work is split into its own skills
+
+**Decision:** Six skills instead of four. `onboard` handles only first-run setup and hands off to `update-profile` if a profile already exists. `update-profile` (new) owns every later change — a conversational edit ("I got my AWS cert") or a full new resume PDF. `tailor-resumes` (new) is split out of `job-search`, which now ends at the sheet and offers a handoff.
+
+**Why:** The user's framing: onboarding is one-time setup, and anything a candidate *does* repeatedly deserves its own skill. Adding a certificate shouldn't route through a resume-parsing onboarding flow — the two share only a schema, which now lives in `references/profile-schema.md` so neither duplicates it. Splitting resume generation also means a LaTeX failure or an unwanted 40-PDF compile can't ride on top of a search whose results are already safely written to the sheet, and the candidate can pick what's worth generating.
+
+**Alternatives considered:** Keep profile creation and update as one skill — argued for initially on shared-logic grounds, then abandoned: that reasoning only covered the new-resume path and collapsed once the conversational-edit case was raised. Keep tailoring inside `job-search` — rejected; it couples fragile, optional work to a completed result.
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-18 — Explicit selection bypasses the resume score threshold
+
+**Decision:** `generate_resumes.py --only-posting-ids` generates exactly the named postings and ignores `resume_tailoring_min_score`. Omitting the flag preserves threshold filtering.
+
+**Why:** Makes "anything over 75", "just these two", and pasted-JD resumes all work through one mechanism. An explicit human choice should outrank a configured default — including for a manually pasted JD that scores below the bar, which is a legitimate thing to want a resume for.
+
+**Alternatives considered:** A separate `--ignore-threshold` flag — redundant; naming specific postings already *is* the override signal.
+
+**Owner:** Sahil
