@@ -1,10 +1,15 @@
 """Score raw job postings against a config.
 
-Dedupes by job link, applies title exclusions, sums skill weights for matched
-skill variants found in the title or description, penalizes postings that
-require more years than the candidate has, bonuses title matches against the
-target roles, drops non-positive scores, sorts descending, and writes the
-result to --scored-out.
+Dedupes by job link, then by normalized (company, title) to collapse the same
+posting mirrored across sources (e.g. LinkedIn + a company's own careers
+site), applies title exclusions, sums skill weights for matched skill
+variants found in the title or description, penalizes postings that require
+more years than the candidate has, bonuses title matches against the target
+roles, drops non-positive scores, sorts descending, and writes the result to
+--scored-out.
+
+--raw-in accepts one or more paths (e.g. LinkedIn's raw.json and companies'
+raw_companies.json) -- all are concatenated before dedup/scoring.
 """
 
 from __future__ import annotations
@@ -40,9 +45,78 @@ def description_of(item: dict) -> str:
     return (item.get("description") or item.get("descriptionText") or item.get("descriptionHtml") or "")
 
 
+def company_of(item: dict) -> str:
+    return (item.get("companyName") or item.get("company") or "").strip()
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def dedupe_cross_source(items: list[dict]) -> list[dict]:
+    """Fold postings sharing a normalized (company, title) -- e.g. the same job
+    mirrored on LinkedIn and a company's own careers site under a different
+    link. Keeps whichever copy has the richer (longer) description. Postings
+    missing a company or title can't be safely folded, so each is kept as-is."""
+    by_key: dict[tuple[str, str], dict] = {}
+    order: list = []
+    for item in items:
+        company, title = _normalize(company_of(item)), _normalize(title_of(item))
+        if not company or not title:
+            order.append(item)  # keep unfoldable items in place, unkeyed
+            continue
+        key = (company, title)
+        if key not in by_key:
+            by_key[key] = item
+            order.append(key)
+        elif len(description_of(item)) > len(description_of(by_key[key])):
+            by_key[key] = item
+    return [entry if isinstance(entry, dict) else by_key[entry] for entry in order]
+
+
 def excluded_by_title(title: str, excludes: list[str]) -> bool:
     t = title.lower()
     return any(term.lower() in t for term in excludes)
+
+
+def passes_location_filter(item: dict, config: dict) -> bool:
+    """Keep postings inside the candidate's province, or remote-in-country.
+
+    Fail-open on empty posting location so we don't drop rows we can't classify.
+    """
+    loc = config.get("location") or {}
+    region = (loc.get("region") or "").strip()
+    country = (loc.get("country") or "").strip()
+    allow_remote = bool(loc.get("include_remote_in_country", True))
+    aliases = [a for a in loc.get("region_aliases", []) if a]
+    if region and region not in aliases:
+        aliases.append(region)
+
+    if not aliases and not country:
+        return True
+
+    posting_loc = (item.get("location") or "").strip().lower()
+    if not posting_loc:
+        return True
+
+    for alias in aliases:
+        if alias.lower() in posting_loc:
+            return True
+
+    if allow_remote and country:
+        workplace = str(item.get("workplaceType") or item.get("workType") or "").lower()
+        text = " ".join(
+            [
+                posting_loc,
+                workplace,
+                (item.get("title") or "").lower(),
+                (item.get("description") or "").lower(),
+            ]
+        )
+        if country.lower() in posting_loc and "remote" in text:
+            return True
+
+    return False
 
 
 def match_skills(text: str, core_skills: dict) -> tuple[int, list[str]]:
@@ -97,6 +171,8 @@ def score_item(item: dict, config: dict, max_raw: int) -> dict | None:
         return None
     if excluded_by_title(title, config.get("exclude_title_terms", [])):
         return None
+    if not passes_location_filter(item, config):
+        return None
 
     target_roles = config.get("target_roles", [])
     title_match_bonus = int(config.get("title_match_bonus", TITLE_MATCH_BONUS_DEFAULT))
@@ -142,17 +218,21 @@ def score_item(item: dict, config: dict, max_raw: int) -> dict | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--raw-in", required=True, type=Path)
+    parser.add_argument("--raw-in", required=True, type=Path, nargs="+")
     parser.add_argument("--scored-out", required=True, type=Path)
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text())
-    raw = json.loads(args.raw_in.read_text())
-    if not isinstance(raw, list):
-        print("ERROR: raw input must be a JSON list", file=sys.stderr)
-        return 1
 
-    deduped = dedupe(raw)
+    raw: list = []
+    for raw_in in args.raw_in:
+        items = json.loads(raw_in.read_text())
+        if not isinstance(items, list):
+            print(f"ERROR: raw input must be a JSON list: {raw_in}", file=sys.stderr)
+            return 1
+        raw.extend(items)
+
+    deduped = dedupe_cross_source(dedupe(raw))
     max_raw = max_possible_raw_score(config)
     scored = [row for item in deduped if (row := score_item(item, config, max_raw))]
     scored.sort(key=lambda r: r["match_score"], reverse=True)
