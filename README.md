@@ -37,6 +37,10 @@ A local Python project that turns a resume PDF into a live list of matching job 
 * `pyyaml` for reading `context/profile.md`'s structured data
 * A LaTeX engine (`tectonic` or `pdflatex`) for compiling tailored resumes
 
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for the full flow — routing, each skill's internals, the secrets boundary, and how files move through the system. Diagrams render inline on GitHub.
+
 ## Project structure
 
 ```

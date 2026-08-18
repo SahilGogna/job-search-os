@@ -41,6 +41,7 @@ Skills also check their own prerequisites — this table is about sequencing, no
 - `configs/search.json` — derived search parameters. Personal, gitignored.
 - `configs/companies.json` — optional company list for career-site fetching. Not personal; tracked in git.
 - `templates/resume_template.tex` (+ `resume.cls`) — what `/tailor-resumes` fills in.
+- `docs/architecture.md` — the whole flow as diagrams: routing, each skill's steps, the secrets boundary, file lineage. Update it when the flow changes.
 - `connections.md` — every external system, and whether it's a `script` or an `mcp` connector, with the reasoning.
 - `decisions/log.md` — append-only record of non-obvious decisions. Add to it rather than burying a rationale in a code comment.
 
