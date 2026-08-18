@@ -171,3 +171,15 @@ Also on the record, because guardrails should be designed against real failures 
 **Alternatives considered:** A separate `--ignore-threshold` flag — redundant; naming specific postings already *is* the override signal.
 
 **Owner:** Sahil
+
+---
+
+## 2026-08-18 — Renamed from "Job Hunter" to "Job Search OS"
+
+**Decision:** The project is now **Job Search OS** (short form used everywhere; "Job Search Operating System" only if something needs spelling out). Repo renamed to `job-search-os`. Earlier entries in this log still say "job-hunter" — left as-is, since this file is append-only and those entries were accurate when written.
+
+**Why:** "Operating system" describes what it actually became. It's no longer a single script that hunts postings — it's onboarding, a profile that persists, connection management, search, resume tailoring, and an application dashboard, routed between six skills. The name should match the shape.
+
+**Alternatives considered:** Keep "Job Hunter" — it undersells the scope and reads like a one-off script.
+
+**Owner:** Sahil

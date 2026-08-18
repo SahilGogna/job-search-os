@@ -1,4 +1,4 @@
-# Job Hunter
+# Job Search OS
 
 ## What we're building
 
@@ -44,7 +44,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full flow — routing
 ## Project structure
 
 ```
-job-hunter/
+job-search-os/
   CLAUDE.md                short manifest — points at the skills below
   .claude/skills/
     onboard/SKILL.md               first run only: resume → profile + config, then connections
@@ -111,7 +111,7 @@ Copy `example.env` to `.env` and fill in the three values below.
    python scripts/set_env_value.py --key JSON_KEY_BASE_64 --from-file-base64 path/to/service-account.json
    ```
    (Doing this by hand with `base64 ... | pbcopy` also works, but the encoded blob *is* the credential — the script avoids putting it on a clipboard or a terminal.)
-5. Create a new Google Sheet called something like "Job Hunter Results"
+5. Create a new Google Sheet called something like "Job Search OS Results"
 6. Share the sheet with the service account email (the `client_email` field in the JSON key), give it Editor access
 7. Copy the Sheet ID from the URL (`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`) into `.env` as `SHEET_ID`
 

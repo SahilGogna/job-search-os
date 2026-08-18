@@ -1,4 +1,4 @@
-# Job Hunter
+# Job Search OS
 
 Turns a resume into a scored list of matching job postings — from LinkedIn and company career sites — in a Google Sheet, with tailored resume PDFs on demand and a read-only Gmail dashboard tracking what happened to each application.
 

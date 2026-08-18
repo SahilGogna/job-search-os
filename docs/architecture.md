@@ -1,6 +1,6 @@
 # Architecture
 
-How Job Hunter is put together: what happens when someone talks to it, which skill handles what, which scripts do the work, and where secrets are allowed to go.
+How Job Search OS is put together: what happens when someone talks to it, which skill handles what, which scripts do the work, and where secrets are allowed to go.
 
 Diagrams are Mermaid, so GitHub renders them inline.
 
