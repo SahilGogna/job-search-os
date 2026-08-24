@@ -40,22 +40,39 @@ Runs once. If a profile already exists it hands off to `/update-profile` rather 
 
 ```mermaid
 flowchart TD
-    S0["Step 0 — venv ready?<br/>create + pip install if not"] --> S1["Step 1 — ask for the fullest<br/>multi-page resume PDF"]
-    S1 --> S2["Step 2 — parse every page,<br/>every role, verbatim bullets"]
-    S2 --> S3["Step 3 — propose 5-8 target roles"]
-    S3 --> CONF{"Candidate<br/>confirms the list?"}
-    CONF -- "edits / adds / removes" --> S3
-    CONF -- "approved" --> S4["Step 4 — write<br/>context/profile.md + configs/search.json"]
-    S4 --> S5["Step 5 — invoke /connections"]
-    S5 --> GM{"Gmail<br/>connected?"}
-    GM -- No --> S7
-    GM -- Yes --> S6{"Step 6 — want Gmail<br/>application tracking?"}
-    S6 -- Yes --> AT["invoke /application-tracker<br/>30-day first scan"]
-    S6 -- No --> S7
-    AT --> S7["Step 7 — close:<br/>what's set up, what's still missing"]
+    RESUME(["Entry"]) --> STATE{"context/setup-state.md<br/>exists?"}
+    STATE -- Yes --> SKIP["Resume at the first<br/>incomplete phase; say what's skipped"]
+    STATE -- No --> P0
+    SKIP --> P0["Phase 0 — preflight:<br/>venv, check_connections.py,<br/>Gmail list_labels"]
+    P0 --> TELL["Name every gap and what it blocks<br/>collects nothing, blocks nothing"]
+    TELL --> P1["Phase 1 — get the resume:<br/>attachment first, else absolute path<br/>never search the filesystem"]
+    P1 --> P2["Phase 2 — parse every page,<br/>every role, verbatim bullets<br/>then propose 5-8 target roles"]
+    P2 --> CONF{"Candidate<br/>confirms the list?"}
+    CONF -- "edits / adds / removes" --> P2
+    CONF -- "approved" --> P3["Phase 3 — write<br/>context/profile.md + configs/search.json"]
+    P3 --> REV{"Phase 3 review —<br/>roles, skill categories,<br/>location accurate?"}
+    REV -- "corrections" --> P3
+    REV -- "confirmed" --> P4["Phase 4 — invoke /connections<br/>for whatever Phase 0 flagged"]
+    P4 --> GM{"Gmail<br/>connected?"}
+    GM -- No --> ASK["Phase 5 — ask them to connect it<br/>REQUIRED, never skipped past"]
+    ASK -- "connects" --> P5
+    ASK -- "declines / can't now" --> INC["carry 'Gmail missing'<br/>forward to the close"]
+    GM -- Yes --> P5{"Phase 5 — want Gmail<br/>application tracking now?"}
+    P5 -- Yes --> AT["invoke /application-tracker<br/>30-day first scan"]
+    P5 -- No --> P6
+    AT --> P6{"Phase 6 — all three<br/>connections up?"}
+    INC --> P6
+    P6 -- Yes --> DONE["✓ You're set up"]
+    P6 -- No --> GAP["Setup is incomplete:<br/>name what's missing and what it costs"]
 ```
 
-Target roles are **always** confirmed, never silently inferred — a resume can support several directions.
+Every phase is checkpointed to `context/setup-state.md`, so an interrupted setup resumes where it stopped instead of starting over — the Google Cloud leg in particular often needs a second sitting.
+
+Two things are **always** confirmed, never silently inferred: the target-roles list, and the parsed profile itself (Phase 3's review gate). A resume can support several directions, and a parsing slip propagates into every match score and every generated resume.
+
+**All three connections are required — Apify, Sheets, and Gmail.** Gmail used to be presented as optional, which meant candidates skipped it and silently lost application tracking and the dashboard. It's now asked for like the other two, and the close only prints a ✓ when all three are up. It still doesn't hard-block: someone who can't authorize a connector right now shouldn't be stranded mid-setup, so the run finishes and reports itself as incomplete.
+
+Credentials are collected in Phase 4, not Phase 0, on purpose. Phase 0 tells the candidate what's coming so nothing surprises them later; doing the profile work first means they see the tool work before spending ten minutes in the Google Cloud console.
 
 ---
 
@@ -90,19 +107,32 @@ flowchart TD
     IN(["Called by a skill, or directly"]) --> CHK["scripts/check_connections.py --scope ..."]
     CHK --> OK{"Exit code"}
     OK -- "0 — all valid" --> TERSE["One line: 'Connections look good'<br/>STOP — no questions"]
-    OK -- "1 — something's wrong" --> COLLECT["Step 2 — ask only for the<br/>flagged keys, one at a time"]
-    COLLECT --> WRITE["scripts/set_env_value.py<br/>stdin, or --from-file-base64"]
-    WRITE --> REV["Step 3 — re-run check_connections.py<br/>typing a value isn't proof it works"]
-    REV --> GM{"Does the caller<br/>need Gmail?"}
-    GM -- Yes --> LL["Step 4 — Gmail list_labels<br/>direct MCP call, not a script"]
-    GM -- No --> UPD
-    LL --> UPD["Step 5 — update connections.md<br/>for what was actually verified"]
-    UPD --> REP["Step 6 — report; never block"]
+    OK -- "1 — something's wrong" --> SCAF["Step 2 — scripts/init_env.py<br/>scaffold .env, print its path"]
+    SCAF --> SEQ["Hand over the COMPLETE sequences up front:<br/>Apify (4 steps) + Google Cloud (9 steps)"]
+    SEQ --> TOK["Step 3 — APIFY_TOKEN<br/>candidate types it into .env"]
+    TOK --> V1{"check --scope apify"}
+    V1 -- invalid --> TOK
+    V1 -- valid --> KEY["JSON_KEY_BASE_64<br/>ask for the FILE PATH only"]
+    KEY --> ENC["set_env_value.py --from-file-base64<br/>encoded in-process, never displayed"]
+    ENC --> EMAIL["check --scope sheets<br/>prints the service-account email"]
+    EMAIL --> SHARE["Give them that address<br/>step 9: share the sheet as Editor"]
+    SHARE --> V2{"SHEET_ID valid?"}
+    V2 -- "permission denied / not found" --> SHARE
+    V2 -- valid --> REV["Step 4 — re-run full scope<br/>typing a value isn't proof it works"]
+    REV --> LL["Step 5 — Gmail list_labels<br/>direct MCP call, not a script"]
+    LL --> GM{"Connected?"}
+    GM -- No --> ASK["Give the connect steps<br/>REQUIRED — ask, don't offer to skip"]
+    ASK -- "connects" --> LL
+    ASK -- "can't right now" --> UPD
+    GM -- Yes --> UPD["Step 6 — update connections.md<br/>for what was actually verified"]
+    UPD --> REP["Step 7 — report what's missing<br/>and what it costs"]
     TERSE --> RET(["Return to caller"])
     REP --> RET
 ```
 
-Gmail is checked with a direct MCP call because MCP tools aren't reachable from a subprocess — everything else goes through the script.
+Gmail is checked with a direct MCP call because MCP tools aren't reachable from a subprocess — everything else goes through the script. It is **not** conditional on the caller: all three connections are required, so Gmail is checked on every interactive run.
+
+**No credential enters the conversation.** Two of the three values are typed by the candidate straight into `.env` and never seen; the third is read from a file path. Each key is verified before the next is asked for, so a failure is always attributable to one thing. Step 9 — sharing the sheet with the service account — is the step people miss, so it loops until the check passes rather than being taken on trust.
 
 ---
 
@@ -115,8 +145,8 @@ flowchart TD
     S0 -- "LinkedIn" --> F1
     S0 -- "both" --> F1
     S0 -- "career sites" --> F2
-    F1["fetch_jobs.py<br/>Apify → outputs/raw_linkedin.json"] --> SC
-    S0 -- "both" --> F2["fetch_companies.py<br/>Greenhouse/Lever/Workday<br/>→ outputs/raw_companies.json"]
+    F1["Announce first: N searches,<br/>expected duration, destination<br/>then fetch_jobs.py → outputs/raw_linkedin.json"] --> SC
+    S0 -- "both" --> F2["fetch_companies.py --list,<br/>then --only per company, announced one at a time<br/>→ outputs/raw_companies/*.json"]
     F2 --> SC["score_jobs.py<br/>dedupe ×2 · country filter · age filter<br/>· stable posting_id → outputs/scored.json"]
     SC --> PUSH["push_to_sheets.py<br/>date tab + 'New Since Last Run'"]
     PUSH --> SUM["Step 5 — sheet URL + summary"]
@@ -128,6 +158,8 @@ flowchart TD
 The skill deliberately **stops at the sheet**. Resume generation is a separate skill so a LaTeX failure or an unwanted 40-PDF compile can't ride on top of a search that already succeeded.
 
 If `configs/companies.json` doesn't exist, Step 0 is skipped entirely — there's nothing to choose between.
+
+**Both fetch legs report progress, by different means.** The career-site leg is genuinely divisible, so it runs one company per call (`--only`) and prints a line each. The LinkedIn leg is one Apify actor run that can't be split without paying startup cost per role, so it gets an announcement instead: how many searches, how long to expect, and where results land. Neither leg should ever be a silent multi-minute block.
 
 ---
 
@@ -200,8 +232,14 @@ flowchart LR
     end
 
     ENV[(".env")]
+    USER(["The candidate,<br/>in their own editor"])
+    KEYFILE[("service-account.json<br/>OUTSIDE the repo")]
 
-    C -- "a value the user just typed<br/>via stdin, never argv" --> SEV
+    USER -- "types APIFY_TOKEN and SHEET_ID<br/>directly — Claude never sees them" --> ENV
+    C -- "init_env.py — creates the file,<br/>never reads it back" --> ENV
+    USER -- "gives a FILE PATH<br/>never the contents" --> C
+    C -- "--from-file-base64 <path>" --> SEV
+    KEYFILE -- "read + encoded in-process" --> SEV
     SEV -- "writes" --> ENV
     ENV -- "load_dotenv, in-process" --> CC
     ENV -- "load_dotenv, in-process" --> OTHER
@@ -211,9 +249,11 @@ flowchart LR
 
 Rules this encodes:
 
-- Claude never reads, `cat`s, `grep`s, or `sed`s `.env` — not even to check whether a key is set. `Read(./.env*)` is denied in `.claude/settings.local.json`.
+- **No credential ever enters the conversation.** Claude never asks for the *contents* of a token or a key file — not to store one, not to encode one, not to verify one. The only credential-adjacent thing it may ask for is a **file path**. A value typed into chat is in the transcript permanently, and no downstream handling can undo that.
+- Claude never reads, `cat`s, `grep`s, or `sed`s `.env` — not even to check whether a key is set. `Read(./.env*)` is denied in `.claude/settings.json`, which is **tracked**, so a fresh clone inherits the protection rather than just the prose.
 - Status comes out as a word, never a value. No lengths, no prefixes, no suffixes.
-- Values go in via **stdin** (argv is visible in process listings) or `--from-file-base64`, which encodes a service-account key in-process so the credential never reaches a terminal.
+- The service-account key file **stays outside the repo** and is referenced by absolute path. Inside a git working tree it eventually gets committed, and that leaks the whole account.
+- `--from-file-base64` encodes in-process, so the blob never reaches a terminal or clipboard. Base64 of the whole file is the only supported encoding — it carries `private_key`'s literal `\n` through untouched, which is what removes the escaping question entirely.
 - API tokens are sent as `Authorization` headers, never URL query params — a token in a URL leaks into `requests` exception messages, which get printed and logged.
 
 ---
@@ -222,14 +262,16 @@ Rules this encodes:
 
 ```mermaid
 flowchart TD
-    R["resumes/resume.pdf"] --> ONB["/onboard or /update-profile"]
+    ATTACH(["Resume attached to the conversation<br/>— preferred — else an absolute path"]) --> R["resumes/resume.pdf"]
+    R --> ONB["/onboard or /update-profile"]
     ONB --> PROF["context/profile.md<br/>PII, gitignored"]
     ONB --> CFG["configs/search.json<br/>personal, gitignored"]
+    ONB --> STATE["context/setup-state.md<br/>phase checkpoints, gitignored"]
     COMP["configs/companies.json<br/>tracked — not personal"] --> JS
 
     PROF --> JS["/job-search"]
     CFG --> JS
-    JS --> RAW["outputs/raw_linkedin.json<br/>outputs/raw_companies.json"]
+    JS --> RAW["outputs/raw_linkedin.json<br/>outputs/raw_companies/*.json — one per company"]
     RAW --> SCORED["outputs/scored.json"]
     SCORED --> SHEET[("Google Sheet<br/>date tabs")]
     SCORED --> TR["/tailor-resumes"]
@@ -242,6 +284,8 @@ flowchart TD
     APPTAB --> DASH["outputs/dashboard_data.json"]
     DASH --> ART[("Claude Artifact<br/>dashboard")]
 ```
+
+The resume is never found by searching the filesystem — it is either attached to the conversation or named by absolute path. Picking up a stale PDF silently poisons the profile, and every score and resume downstream of it.
 
 The two halves are **deliberately unconnected**: the job-postings sheet and the Gmail dashboard never reference each other. The sheet is what the search found; the dashboard is what email says happened to applications — including ones this tool never surfaced.
 

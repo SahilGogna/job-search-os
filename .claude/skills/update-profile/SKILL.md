@@ -28,11 +28,26 @@ Never add anything they didn't actually say. If they mention a project vaguely, 
 
 ## Step 2b — New resume PDF
 
-1. Save it to `resumes/resume.pdf` and parse per §1 (every page, every role, verbatim bullets).
+1. Get the PDF, in strict order of preference: **a resume attached to this conversation**
+   first, otherwise ask for an **absolute file path**. Never go looking for one on the
+   filesystem — not in a source folder, not in Downloads — and never parse a resume you
+   weren't pointed at. Copy it to `resumes/resume.pdf` and parse per §1 (every page,
+   every role, verbatim bullets).
 2. **Diff against the existing profile** — new/changed roles, added or dropped skills, new education or certs, changed location or contact details.
 3. Present the differences in plain language, not a raw diff dump:
    > *"This resume adds a Senior Analyst role at Beta Inc (Mar 2026–present), three new skills (Airflow, dbt, Looker), and drops Tableau. Everything else matches. Take all of it, some of it, or leave the profile as-is?"*
 4. Apply **only** what they confirm. A resume omitting something isn't proof they want it removed — surface the drop and let them decide, don't silently delete.
+
+## Step 2c — Migrate a flat skills list, if you find one
+
+`skills` used to be a flat list and is now a mapping of category → list (§2). If the
+profile you opened still has the flat form, group it per §1 and **show the proposed
+grouping for confirmation** before writing — the categories become row labels on every
+generated resume, so a wrong one is visible to employers.
+
+Do this whenever you're already editing the profile for another reason. Don't make a
+separate errand out of it, and don't touch `configs/search.json` for it — `core_skills`
+is derived from the same skills either way.
 
 ## Step 3 — Re-derive the config only if it matters
 

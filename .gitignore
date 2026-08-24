@@ -8,6 +8,12 @@ archives/*
 !archives/.gitkeep
 .claude/settings.local.json
 
+# Belt and braces. The service-account key file is supposed to live OUTSIDE this repo
+# entirely (see example.env) -- but if one ever lands in here, it must not be committable.
+*service-account*.json
+*credentials*.json
+*-key.json
+
 __pycache__/
 *.py[cod]
 *.egg-info/

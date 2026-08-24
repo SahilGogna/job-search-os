@@ -4,6 +4,25 @@
 
 A local Python project that turns a resume PDF into a live list of matching job postings — from LinkedIn *and* company career sites — in a Google Sheet, plus a tailored resume PDF for every strong match and a read-only Gmail dashboard tracking what happened to each application. No deployment. No external LLM calls. Claude Code is the reasoning layer.
 
+## Supported platforms
+
+**macOS and Linux — tested.** All commands in this repo use the venv as `.venv/bin/python`.
+
+**Windows — documented below, not yet verified.** The setup path has not been run
+end to end on Windows; if you hit something this section doesn't cover, that's a gap in
+the docs, not in your setup.
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| Python in the venv | `.venv/bin/python` | `.venv\Scripts\python` |
+| pip in the venv | `.venv/bin/pip` | `.venv\Scripts\pip` |
+| LaTeX engine | `brew install tectonic` | `winget install ArtifexSoftware.Tectonic` or `scoop install tectonic` |
+| Markdown preview in VS Code | `Cmd+Shift+V` | `Ctrl+Shift+V` |
+| Path to your service-account JSON | `/Users/you/Downloads/key.json` | `C:\Users\you\Downloads\key.json` |
+
+You never need to base64-encode anything by hand on any platform — `/connections` does it
+for you from the file path, so the old `base64 … | pbcopy` macOS recipe is gone.
+
 ## How it works end to end
 
 1. Open Claude Code in this project folder. If it's your first time (no `context/profile.md` yet), it runs the **onboard** skill: give it your fullest resume PDF — a detailed, multi-page one covering every role, not a one-pager — and it reads it itself, figures out skills, location, and years of experience, proposes a list of target roles and **checks that list with you before locking it in**, then writes `context/profile.md` (your full profile) and `configs/search.json` (the derived search plan). It then invokes the **connections** skill, which walks you through `.env` (`APIFY_TOKEN`, `JSON_KEY_BASE_64`, `SHEET_ID`) one value at a time and confirms Gmail is connected — never blocking the rest of setup if you'd rather finish it later. Finally it asks whether you want Gmail application tracking enabled — say yes and it runs an initial scan right there.
@@ -91,31 +110,90 @@ job-search-os/
 
 ## One-time setup
 
-The `/connections` skill (invoked automatically by `/onboard`, or run standalone anytime — "set up my API keys") walks you through this interactively, one value at a time, and validates each with a real call rather than trusting it blindly. What follows is the manual version, for reference or if you'd rather do it yourself.
+The **`/connections`** skill (invoked automatically by `/onboard`, or run standalone
+anytime — "set up my API keys") walks you through all of this interactively, scaffolds
+`.env` for you, gives you the complete sequence up front, and validates each value with a
+real call rather than trusting it blindly. What follows is the same thing written out, for
+reference or if you'd rather do it yourself.
 
-**How secrets are handled:** Claude never reads `.env` — not even to check whether a key is set. Status comes from `scripts/check_connections.py`, which prints only `valid` / `invalid` / `missing`; writes go through `scripts/set_env_value.py`, which takes the value on stdin (never the command line, which is visible in process listings) or base64-encodes a service-account JSON file in-process so the credential never appears in a terminal. `Read` on `.env` is denied outright in `.claude/settings.local.json`.
+**How secrets are handled.** No credential ever passes through the conversation. Claude
+never reads `.env` — not even to check whether a key is set. You type `APIFY_TOKEN` and
+`SHEET_ID` into `.env` yourself, in your own editor. For the Google service-account key,
+you hand over the **file's path** and `scripts/set_env_value.py` base64-encodes it
+in-process. Status comes back from `scripts/check_connections.py`, which prints only
+`valid` / `invalid` / `missing`. `Read` on `.env` is denied in `.claude/settings.json`,
+which is tracked, so the protection survives a fresh clone.
 
-Copy `example.env` to `.env` and fill in the three values below.
+Claude will never ask you to paste, show, or confirm the *contents* of a credential. If it
+ever does, something is wrong — the only credential-adjacent thing it should ask for is a
+file path.
+
+### Create `.env`
+
+```
+.venv/bin/python scripts/init_env.py
+```
+
+Creates `.env` from `example.env` if it doesn't exist and prints its path. It never
+overwrites an existing file. Open it in your editor and keep it open — the values below go
+straight into it.
 
 ### Apify
-* Get an API token from https://console.apify.com/account/integrations
-* Put it in `.env` as `APIFY_TOKEN`
 
-### Google service account
+1. Create an account at https://console.apify.com
+2. **Settings → API & Integrations**
+3. Create a new token
+4. Paste it into the `APIFY_TOKEN=` line in `.env` and save
 
-1. Google Cloud Console — create a project (or reuse an existing one)
-2. Enable the Google Sheets API and Google Drive API
-3. Create a service account, generate a JSON key, download the JSON file
-4. Store the key — just give `/connections` the file path and it encodes it in-process:
-   ```
-   python scripts/set_env_value.py --key JSON_KEY_BASE_64 --from-file-base64 path/to/service-account.json
-   ```
-   (Doing this by hand with `base64 ... | pbcopy` also works, but the encoded blob *is* the credential — the script avoids putting it on a clipboard or a terminal.)
-5. Create a new Google Sheet called something like "Job Search OS Results"
-6. Share the sheet with the service account email (the `client_email` field in the JSON key), give it Editor access
-7. Copy the Sheet ID from the URL (`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`) into `.env` as `SHEET_ID`
+### Google service account and sheet
 
-The JSON key file itself never lives on disk in this project — only its base64 form in `.env`.
+All nine steps, in order. **Step 9 is the one people miss**, and nothing works without it.
+
+1. Create a Google Cloud project — https://console.cloud.google.com
+2. Enable the **Google Sheets API**
+3. Enable the **Google Drive API**
+4. **Credentials → Create Credentials → Service Account**
+5. Skip every optional step — no grants or user access are needed
+6. Open the service account → **Keys** tab → **Add Key → Create New Key → JSON** → download
+7. Create the Google Sheet this project writes to, **signed in as the same Google account**
+8. Copy the sheet ID out of its URL — the part between `/d/` and `/edit` — into the `SHEET_ID=` line in `.env`
+9. **Share that sheet with the service account's `client_email`, as Editor.** The sheet is invisible to the service account until you do this.
+
+Then store the key. **Do not paste the JSON into `.env`** — give Claude the file's path,
+or run it yourself:
+
+```
+.venv/bin/python scripts/set_env_value.py --key JSON_KEY_BASE_64 --from-file-base64 /absolute/path/to/service-account.json
+```
+
+Two rules about that file:
+
+- **Keep it outside this repo.** A credentials file inside a git working tree gets
+  committed by accident, and that leaks the whole service account. Leave it in Downloads
+  and reference it by absolute path. (`.gitignore` also blocks the obvious filenames, but
+  that's a backstop, not the plan.)
+- **Never open it and copy anything out.** Base64 of the whole file is the only supported
+  encoding, and it exists precisely so you don't have to deal with the `private_key`
+  field's literal `\n` sequences — they're carried through untouched. There is nothing to
+  escape, unescape, quote, or strip. If `check_connections.py` says *"this is raw JSON,
+  not base64"*, that line in `.env` was filled in by hand; clear it and use the path.
+
+### Verify
+
+```
+.venv/bin/python scripts/check_connections.py --scope apify,sheets
+```
+
+Prints a status word per key and exits non-zero if anything needs attention. When
+`JSON_KEY_BASE_64` is valid it also prints the service-account email — that's the address
+step 9 needs. Common failures and their fixes:
+
+| Message | Fix |
+|---|---|
+| `APIFY_TOKEN: invalid (rejected by Apify ...)` | Wrong or revoked token — make a new one and correct that line in `.env` |
+| `JSON_KEY_BASE_64: invalid (this is raw JSON, not base64 ...)` | You pasted the file's contents; clear the line and use `--from-file-base64` with the path |
+| `SHEET_ID: invalid (permission denied ...)` | Step 9 isn't done — share the sheet with the printed service-account email as Editor |
+| `SHEET_ID: invalid (not found ...)` | Wrong ID, or the sheet belongs to a different Google account than the project |
 
 ### LaTeX engine (for tailored resumes)
 
@@ -152,6 +230,7 @@ The onboard skill generates this from your profile. Example:
   "min_match_score": 50,
   "resume_tailoring_min_score": 60,
   "max_posting_age_days": 7,
+  "max_skill_lines": 2,
   "core_skills": {
     "python":    {"weight": 3, "variants": ["python", "pandas", "numpy"]},
     "sql":       {"weight": 3, "variants": ["sql", "mysql", "postgres"]},
@@ -201,9 +280,25 @@ The Sheet's Match Score column is a **0–100 percentage**: `round((skill_weight
 For every scored posting above `resume_tailoring_min_score` (default 60), `scripts/generate_resumes.py`:
 
 1. Reads the candidate's full profile from `context/profile.md`'s YAML frontmatter
-2. Reorders the skills list and each role's bullets so ones overlapping that posting's matched skills surface first — deterministic keyword matching, no LLM calls, never rewrites or invents content
+2. Reorders the skills **within each category** and each role's bullets so ones overlapping that posting's matched skills surface first — deterministic keyword matching, no LLM calls, never rewrites or invents content
 3. Fills `templates/resume_template.tex`'s placeholder tokens with the reordered content
 4. Compiles it to a PDF via `tectonic` (or `pdflatex`) into `outputs/tailored_resumes/<YYYY-MM>/<YYYY-MM-DD>/`
+
+### The skills table
+
+`context/profile.md` groups skills into categories, and each becomes one bold-labelled row.
+A LaTeX `l` column doesn't wrap — it typesets its full natural width and runs off the page —
+so `generate_resumes.py` breaks each category into rows itself, packing skills into lines of
+~72 characters, splitting only at commas. Continuation rows start with `&`, leaving the label
+column empty so the list runs on flush underneath its own category.
+
+Each category is capped at `max_skill_lines` rows (default 2). Past that, the entries least
+relevant to *this* posting are dropped — they've already been sorted to the back — and a note
+naming the count goes to stderr, so it's never silent. If a category is regularly truncated,
+split it rather than raising the cap.
+
+A profile still holding the older flat skills list renders as a single `Skills` row and keeps
+working; `update-profile` migrates it when you next touch the profile.
 
 Filenames are `<company>_<job-title>_<posting-id>.pdf`, nested by month then day so runs don't pile up in one flat folder — same date-ownership pattern `push_to_sheets.py` uses for its tab names. The intermediate `.tex` files are kept alongside in that day's `tex/` subfolder for inspection.
 
