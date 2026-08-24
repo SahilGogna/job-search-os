@@ -87,6 +87,17 @@ def check_sheets() -> tuple[bool, str]:
     if key_presence:
         return False, f"JSON_KEY_BASE_64: {key_presence}"
 
+    # The single most common way to get this key wrong is to paste the JSON file's
+    # contents instead of storing its base64 form. That fails the same way a typo does,
+    # so name it specifically -- the fix ("give the file's path") is completely
+    # different from the fix for a corrupted blob. Checking the first character tells us
+    # the shape without revealing anything about the value.
+    if os.environ["JSON_KEY_BASE_64"].strip().strip("\"'").startswith("{"):
+        return False, (
+            "JSON_KEY_BASE_64: invalid (this is raw JSON, not base64 -- don't paste the "
+            "key file's contents; give Claude the file's path instead and it will encode it)"
+        )
+
     try:
         creds = load_credentials_from_env()
     except RuntimeError:

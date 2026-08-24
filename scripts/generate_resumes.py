@@ -35,6 +35,13 @@ import yaml
 
 DEFAULT_MIN_SCORE = 60
 
+# A LaTeX `l` column does not wrap -- it typesets its full natural width and runs off the
+# page. So the skills list has to be broken into rows here, before it reaches LaTeX.
+# 72 is a deliberately conservative fit for the second column of the skills tabular at
+# 0.4in margins (measured width allows ~85 characters at 10pt).
+SKILL_LINE_CHARS = 72
+DEFAULT_MAX_SKILL_LINES = 2
+
 LATEX_SPECIAL = {
     "&": r"\&",
     "%": r"\%",
@@ -97,6 +104,69 @@ def reorder_skills(skills: list[str], keywords: set[str]) -> list[str]:
     return sorted(skills, key=rank)
 
 
+def skill_groups(skills) -> dict[str, list[str]]:
+    """Accept both profile shapes. `skills` is a mapping of category -> list, but
+    profiles written before that change hold a flat list; those render as a single
+    "Skills" row rather than failing, so an un-migrated profile keeps working."""
+    if isinstance(skills, dict):
+        return {str(k): list(v or []) for k, v in skills.items() if v}
+    return {"Skills": list(skills or [])}
+
+
+def wrap_skills(skills: list[str], width: int = SKILL_LINE_CHARS) -> list[list[str]]:
+    """Greedily pack skills into lines of at most `width` rendered characters, breaking
+    only at comma boundaries -- never mid-skill."""
+    lines: list[list[str]] = []
+    current: list[str] = []
+    for skill in skills:
+        if current and len(", ".join(current + [skill])) > width:
+            lines.append(current)
+            current = [skill]
+        else:
+            current.append(skill)
+    if current:
+        lines.append(current)
+    return lines
+
+
+def render_skills_block(
+    skills, keywords: set[str], max_lines: int = DEFAULT_MAX_SKILL_LINES
+) -> str:
+    """Build the rows of the skills tabular: one row per category, plus continuation
+    rows for categories too long to fit on one line.
+
+    A continuation row starts with `&`, leaving the bold label column empty so the list
+    runs on flush underneath its own category.
+    """
+    rows: list[str] = []
+    for category, items in skill_groups(skills).items():
+        ordered = reorder_skills(items, keywords)
+        lines = wrap_skills(ordered)
+
+        if len(lines) > max_lines:
+            dropped = sum(len(line) for line in lines[max_lines:])
+            lines = lines[:max_lines]
+            # reorder_skills has already floated this posting's matched skills to the
+            # front, so what falls off is the least relevant to this specific job --
+            # but say so rather than quietly shortening someone's resume.
+            print(
+                f"NOTE: '{category}' has more skills than fit in {max_lines} lines; "
+                f"dropped the {dropped} least relevant to this posting",
+                file=sys.stderr,
+            )
+
+        for i, line in enumerate(lines):
+            # Escape per line, not before wrapping: escape_latex turns & into \& and #
+            # into \#, so measuring escaped text would overstate the rendered width and
+            # break lines too early.
+            text = escape_latex(", ".join(line))
+            if i < len(lines) - 1:
+                text += ","  # the list continues on the next row
+            label = escape_latex(category) if i == 0 else ""
+            rows.append(f"{label} & {text}\\\\")
+    return "\n".join(rows)
+
+
 def bullet_score(bullet: str, keywords: set[str]) -> int:
     normalized = normalize(bullet)
     return sum(1 for kw in keywords if kw in normalized)
@@ -134,27 +204,35 @@ def render_address_line_2(profile: dict) -> str:
 
 
 def render_education_block(education: list[dict]) -> str:
+    # Entries are separated by a blank line, not a trailing `\\` -- a line break
+    # immediately before a paragraph break errors with "there's no line here to end".
     lines = []
     for entry in education:
         degree = escape_latex(entry.get("degree", ""))
         institution = escape_latex(entry.get("institution", ""))
         dates = escape_latex(entry.get("dates", ""))
-        lines.append(f"{{\\bf {degree}}}, {institution} \\hfill {{{dates}}}\\\\")
-    return "\n".join(lines)
+        lines.append(f"{{\\bf {degree}}}, {institution} \\hfill {{{dates}}}")
+    return "\n\n".join(lines)
 
 
 def render_experience_block(experience: list[dict]) -> str:
+    """Bold `Title, Company, Location` with the dates flushed right, then the bullets --
+    matching the template's own layout rather than resume.cls's rSubsection."""
     blocks = []
     for role in experience:
-        company = escape_latex(role.get("company", ""))
+        heading = ", ".join(
+            escape_latex(role.get(field, ""))
+            for field in ("title", "company", "location")
+            if role.get(field)
+        )
         dates = escape_latex(role.get("dates", ""))
-        title = escape_latex(role.get("title", ""))
-        location = escape_latex(role.get("location", ""))
-        bullets = "\n".join(f"\\item {escape_latex(b)}" for b in role.get("bullets", []))
+        bullets = "\n".join(f"    \\item {escape_latex(b)}" for b in role.get("bullets", []))
         blocks.append(
-            f"\\begin{{rSubsection}}{{{company}}}{{{dates}}}{{{title}}}{{{location}}}\n"
+            f"\\textbf{{{heading}}} \\hfill {dates}\n"
+            f"\\begin{{itemize}}\n"
+            f"    \\itemsep -3pt {{}}\n"
             f"{bullets}\n"
-            f"\\end{{rSubsection}}"
+            f"\\end{{itemize}}"
         )
     return "\n\n".join(blocks)
 
@@ -164,10 +242,11 @@ def render_projects_block(projects: list[dict]) -> str:
     for project in projects:
         title = escape_latex(project.get("title", ""))
         description = escape_latex(project.get("description", ""))
-        items.append(f"\\item \\textbf{{{title}.}} {{{description}}}")
+        items.append(f"    \\item \\textbf{{{title}.}} {{{description}}}")
     if not items:
         return ""
-    return "\n".join(items)
+    # Must carry its own itemize: \item outside a list environment is a LaTeX error.
+    return "\\begin{itemize}\n    \\itemsep -3pt {}\n" + "\n".join(items) + "\n\\end{itemize}"
 
 
 def render_leadership_block(leadership: list[dict]) -> str:
@@ -175,10 +254,12 @@ def render_leadership_block(leadership: list[dict]) -> str:
     for entry in leadership:
         title = escape_latex(entry.get("title", ""))
         description = escape_latex(entry.get("description", ""))
-        items.append(f"\\item \\textbf{{{title}.}} {{{description}}}" if title else f"\\item {description}")
+        items.append(
+            f"    \\item \\textbf{{{title}.}} {{{description}}}" if title else f"    \\item {description}"
+        )
     if not items:
         return ""
-    return "\\begin{itemize}\n" + "\n".join(items) + "\n\\end{itemize}"
+    return "\\begin{itemize}\n    \\itemsep -3pt {}\n" + "\n".join(items) + "\n\\end{itemize}"
 
 
 def strip_empty_sections(tex: str, empty_names: set[str]) -> str:
@@ -222,8 +303,14 @@ def compile_pdf(tex_path: Path, out_dir: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def build_tex(template_text: str, profile: dict, keywords: set[str]) -> str:
-    skills = reorder_skills(list(profile.get("skills", [])), keywords)
+def build_tex(
+    template_text: str,
+    profile: dict,
+    keywords: set[str],
+    max_skill_lines: int = DEFAULT_MAX_SKILL_LINES,
+) -> str:
+    raw_skills = profile.get("skills") or []
+    skills_block = render_skills_block(raw_skills, keywords, max_skill_lines)
     experience = reorder_experience(list(profile.get("experience", [])), keywords)
     projects = list(profile.get("projects", []))
     leadership = list(profile.get("leadership", []))
@@ -236,7 +323,12 @@ def build_tex(template_text: str, profile: dict, keywords: set[str]) -> str:
         "{{ADDRESS_LINE_1}}": render_address_line_1(profile),
         "{{ADDRESS_LINE_2}}": render_address_line_2(profile),
         "{{SUMMARY}}": escape_latex(profile.get("summary", "")),
-        "{{SKILLS_LIST}}": escape_latex(", ".join(skills)),
+        "{{SKILLS_BLOCK}}": skills_block,
+        # Kept for any custom template still using the old single-line token. Note it
+        # does not wrap -- SKILLS_BLOCK is the one that fits on the page.
+        "{{SKILLS_LIST}}": escape_latex(
+            ", ".join(s for items in skill_groups(raw_skills).values() for s in reorder_skills(items, keywords))
+        ),
         "{{EDUCATION_BLOCK}}": render_education_block(list(profile.get("education", []))),
         "{{EXPERIENCE_BLOCK}}": render_experience_block(experience),
         "{{PROJECTS_BLOCK}}": projects_block,
@@ -295,6 +387,7 @@ def main() -> int:
         return 1
 
     threshold = int(config.get("resume_tailoring_min_score", DEFAULT_MIN_SCORE))
+    max_skill_lines = int(config.get("max_skill_lines", DEFAULT_MAX_SKILL_LINES))
     if args.only_posting_ids:
         wanted = {s.strip() for s in args.only_posting_ids.split(",") if s.strip()}
         qualifying = [item for item in scored if item.get("posting_id") in wanted]
@@ -340,7 +433,7 @@ def main() -> int:
         slug = f"{sanitize_filename(company)}_{sanitize_filename(title)}_{posting_id}"
 
         keywords = matched_keywords(item)
-        tex_content = build_tex(template_text, profile, keywords)
+        tex_content = build_tex(template_text, profile, keywords, max_skill_lines)
         tex_path = tex_dir / f"{slug}.tex"
         tex_path.write_text(tex_content)
 

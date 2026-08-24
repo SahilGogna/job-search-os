@@ -183,3 +183,65 @@ Also on the record, because guardrails should be designed against real failures 
 **Alternatives considered:** Keep "Job Hunter" — it undersells the scope and reads like a one-off script.
 
 **Owner:** Sahil
+
+---
+
+## 2026-08-24 — No credential ever enters the conversation
+
+**Decision:** The candidate types `APIFY_TOKEN` and `SHEET_ID` into `.env` themselves, in their own editor. Claude scaffolds the file (`scripts/init_env.py`), names the line to fill, waits for confirmation, and verifies with `check_connections.py`. For the service-account key — the one value that can't be hand-encoded — Claude asks for the **file path** and runs `set_env_value.py --from-file-base64`. Asking for the *contents* of a credential is prohibited outright, including for encoding or verification.
+
+**Why:** A live setup walkthrough had the `connections` skill say "paste it here" for the Apify token, then request the service-account JSON's contents in chat — twice, the second time when base64 encoding came up. `set_env_value.py` protected argv and stored values, but its own docstring already admitted the gap: a value typed into chat is in the transcript and nothing downstream can undo that. The leak was never in the script, it was in the instructions steering the user into the chat box.
+
+**Alternatives considered:** Keep `--stdin` and rely on the model to be careful with the value — the failure already happened once, and "be careful with the secret you're holding" is a weaker guarantee than never holding it. Accepting `SHEET_ID` in chat since it isn't a credential — true, but a single "paste it here" in the flow re-establishes the pattern the rest of the skill is trying to break.
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-24 — Base64 of the whole key file is the only supported encoding
+
+**Decision:** `JSON_KEY_BASE_64` holds the base64 of the entire downloaded JSON, produced in-process by `set_env_value.py`. No other form is supported, and `check_connections.py` detects a value starting with `{` and reports "this is raw JSON, not base64" with the file-path fix rather than the generic decode failure.
+
+**Why:** The `private_key` field contains literal `\n` sequences, and setup left users guessing whether to paste the whole value, strip the quotes, or preserve the newlines. Encoding the file wholesale makes the question disappear — the bytes survive untouched, so there is nothing to escape, unescape, quote, or strip. Committing to one encoding and validating it beats documenting three that might work.
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-24 — Setup is phased and resumable; prerequisites are checked first
+
+**Decision:** `/onboard` runs in checkpointed phases recorded in `context/setup-state.md`, and opens with a preflight that checks connections *and* the Gmail connector and tells the candidate everything they'll need before any of it is collected. Credential setup itself stays late, after the profile work.
+
+**Why:** Setup was one unbroken chunk that needed a second meeting to finish, and the run reached the application step before discovering Gmail wasn't connected. Naming every gap in the first minute costs nothing and removes the late surprise; checkpointing means stopping halfway is free. Credentials stay late deliberately — the profile work is fast and shows value, and the candidate can create the Google Cloud project in parallel knowing what's coming.
+
+**Alternatives considered:** Move credential collection to the front, since nothing works without it — it front-loads the most tedious ten minutes onto someone who hasn't seen the tool do anything yet.
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-24 — Skills are categorized in the profile and wrapped at render time
+
+**Decision:** `context/profile.md` stores `skills` as a mapping of category to list. `generate_resumes.py` renders one bold-labelled table row per category, packing skills into ~72-character lines split only at commas, with continuation rows starting `&` so the label column stays empty. Each category is capped at `max_skill_lines` rows (default 2); overflow drops the entries least relevant to that posting, with a note to stderr. A flat list is still accepted and renders as one `Skills` row.
+
+**Why:** Generated resumes had a skills section that ran off the page. The cause was structural, not cosmetic: every skill was joined into one string and dropped into a LaTeX `l` column, which does not wrap — it typesets its full natural width regardless of the margin. No template change fixes that, so the breaking has to happen in Python before LaTeX sees it. Truncation is safe to do relevance-first because the list is already sorted by match to the posting.
+
+**Alternatives considered:** A `p{width}` column, which wraps natively — but it wraps mid-item and can't produce the flush-under-category look, and it gives no control over how many lines a category may consume. Dropping nothing and letting long categories run to four or five lines — that pushes real experience onto page two.
+
+**Owner:** Sahil
+
+---
+
+## 2026-08-24 — Gmail is a required connection, reported as unfinished setup rather than blocked
+
+**Decision:** All three connections — `APIFY_TOKEN`, the Sheets service account, and the Gmail connector — are required. `/connections` asks for Gmail with real instructions rather than offering it conditionally, and `/onboard` prints its "✓ You're set up" close **only** when all three are up; otherwise it says setup is incomplete and names what the gap costs. It still does not hard-block.
+
+**Why:** Gmail was presented as optional ("that one's optional and only affects application tracking", "job search works fine without it"). A candidate reasonably skipped it and silently lost application tracking and the dashboard — half the product — while onboarding still congratulated them on being set up. The failure wasn't that they chose wrong; it was that the flow framed a required piece as a preference.
+
+Not hard-blocking is deliberate: a connector may be unauthorizable at that moment (org policy, wrong account, no browser to hand), and stranding someone mid-onboarding over it would defeat the phased/resumable design. The lever that actually changes behaviour is the close — a ✓ that requires all three, versus a footnote that reads as optional.
+
+**Also decided:** the connector being required is *not* the same as consent to read the inbox. Phase 5 still asks before the first scan and still records `gmail_tracking_enabled`. Requiring the connection makes the capability available; the candidate still says when it's used.
+
+**Alternatives considered:** Hard-block onboarding until Gmail connects — strands people over something they may not control. Leave it optional and just describe the cost better — the previous wording already described the cost and was still read as "skippable", because it was.
+
+**Owner:** Sahil

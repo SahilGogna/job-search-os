@@ -6,7 +6,7 @@ description: Use when the candidate wants to run a job search — "find jobs for
 ## Prerequisites
 
 1. `context/profile.md` and `configs/search.json` must both exist. If either is missing, tell the candidate to run onboarding first (say: "I don't have your profile yet — let's onboard you first") and stop. Do not improvise a config from a conversation alone.
-2. Ensure the project venv is ready: if `.venv/` doesn't exist, create it and `pip install -r requirements.txt`.
+2. Ensure the project venv is ready: if `.venv/` doesn't exist, create it and `.venv/bin/pip install -r requirements.txt`. All commands below use `.venv/bin/python`; on Windows that path is `.venv\Scripts\python` (see README's Supported platforms).
 3. **Connections pre-flight**: invoke the `connections` skill with scope `apify,sheets`. Credentials can expire or be revoked between runs, so this is checked every time — but it's silent when everything's fine, and only becomes a conversation if something's actually broken. **Never inspect `.env` yourself**; `connections` owns that entirely.
 
 If any of the required steps below fails, print the error and stop. Do not silently fall back or skip a required step without saying so.
@@ -15,24 +15,60 @@ If any of the required steps below fails, print the error and stop. Do not silen
 
 0. **Ask which sources.** Every run, before fetching: *"LinkedIn only, company career sites only, or both?"* Skip this question entirely if `configs/companies.json` doesn't exist — there's nothing to choose between, so just use LinkedIn. Their answer decides which of steps 1 and 2 run.
 
-1. **Fetch — LinkedIn**: `python scripts/fetch_jobs.py --config configs/search.json --raw-out outputs/raw_linkedin.json`
+1. **Fetch — LinkedIn.** This one call blocks for several minutes with nothing visible
+   until it returns, so **say what's about to happen before you run it** — how many
+   searches, how long, and where the results land:
+
+   > *"Searching LinkedIn via Apify — 12 searches (6 roles × province + remote). The
+   > actor run usually takes 3–6 minutes, then about 5 more verifying each listing is
+   > still open. Results go to `outputs/raw_linkedin.json`. I'll report back when it's
+   > done."*
+
+   Read the actual URL count from the config rather than guessing: 2 URLs per target
+   role when `include_remote_in_country` is on, 1 otherwise.
+
+   ```
+   .venv/bin/python scripts/fetch_jobs.py --config configs/search.json --raw-out outputs/raw_linkedin.json
+   ```
    - Verifies each posting is still open by hitting `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/<id>` — a listing with no `top-card-layout__cta--primary` button is dropped as closed. Serial + 1s delay (~5 min for a few hundred postings). Disable with `"verify_listings": false` in the config only if a fast fetch is needed and closed listings will be filtered downstream. Postings the verifier can't reach are kept.
+   - The Apify poll has a hard 20-minute ceiling. If it hits that, say so — don't retry silently.
 
-2. **Fetch — company career sites** (if chosen in step 0): run `python scripts/fetch_companies.py --config configs/companies.json --raw-out outputs/raw_companies.json`. Hits each company's public Greenhouse/Lever/Workday API directly — companies with no confirmed API (`"ats": "custom"`) are skipped and logged, not fatal. If `configs/companies.json` doesn't exist, skip this step entirely and proceed with LinkedIn only — don't block the search on an optional source.
+2. **Fetch — company career sites** (if chosen in step 0). Walk the companies **one at a
+   time** and report each as it completes, so this leg is visible progress rather than
+   another silent multi-minute block.
 
-3. **Score**: `python scripts/score_jobs.py --config configs/search.json --raw-in outputs/raw_linkedin.json [outputs/raw_companies.json] --scored-out outputs/scored.json`
-   - `--raw-in` takes one or more paths — pass both files if step 2 ran, otherwise just the LinkedIn one.
+   If `configs/companies.json` doesn't exist, skip this step entirely and proceed with
+   LinkedIn only — don't block the search on an optional source.
+
+   First, clear last run's per-company files and list what's fetchable:
+   ```
+   mkdir -p outputs/raw_companies && rm -f outputs/raw_companies/*.json
+   .venv/bin/python scripts/fetch_companies.py --config configs/companies.json --list
+   ```
+   `--list` prints `name<TAB>ats` for companies with a confirmed API. Then one call each,
+   announcing the company **before** the call and its count after:
+   ```
+   .venv/bin/python scripts/fetch_companies.py --config configs/companies.json --only "RBC" --raw-out outputs/raw_companies/rbc.json
+   ```
+   Most of the config's 26 companies are `"ats": "custom"` with no public API and are not
+   listed — mention the skipped count once at the end of the loop, not per company.
+
+   A single company failing is logged and skipped, not fatal — carry on with the rest and
+   name the failures in the summary.
+
+3. **Score**: `.venv/bin/python scripts/score_jobs.py --config configs/search.json --raw-in outputs/raw_linkedin.json outputs/raw_companies/*.json --scored-out outputs/scored.json`
+   - `--raw-in` takes one or more paths — pass whichever of the two sources actually ran. The glob expands to one file per company from step 2; if only LinkedIn ran, pass just that path.
    - Match Score is 0–100: `round((skill_weights_matched + title_bonus − experience_penalty) / (sum_of_all_skill_weights + title_match_bonus) × 100)`. Anything that computes to ≤0 is dropped. Postings below `min_match_score` are dropped.
    - Dedupes twice: first by exact link, then by normalized (company, title) so the same posting mirrored across LinkedIn and a company's own site collapses to one row (keeping whichever copy has the richer description).
    - **Country filter**: keeps any posting anywhere in `location.country` (not just the candidate's province), plus remote postings mentioning the country — word-boundary-safe matching, not naive substring (a past bug let "ON" match inside "London"; fixed).
    - **Age filter**: drops postings older than `max_posting_age_days` (default 7). Postings whose date can't be parsed (mainly some Workday listings using relative text) are kept, not dropped — the printed summary reports how many.
    - Each scored row gets a stable `posting_id` (hash of its apply link, or company+title+location+source if no link) — the same posting produces the same ID across separate days, which is what makes the "New Since Last Run" column below possible. The summary line reports how many distinct IDs were verified.
 
-4. **Push**: `python scripts/push_to_sheets.py --scored-in outputs/scored.json --tab-name <YYYY-MM-DD>`
+4. **Push**: `.venv/bin/python scripts/push_to_sheets.py --scored-in outputs/scored.json --tab-name <YYYY-MM-DD>`
    - Tab is date-based — a new day starts a fresh tab. Same-day re-runs **merge** into the existing tab keyed by apply link — the fresher row wins on collision.
    - Before writing, compares today's posting IDs against the most recent *previous* date tab (skips the "Applications" tab and any tab from before this feature shipped) and marks each row's `New Since Last Run` column `Yes`/`No` accordingly — pure visibility, nothing is dropped based on this. The summary line reports the counts, or says so explicitly if there's no comparable previous tab yet.
 
-5. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites), kept N after scoring, wrote to tab `<date>` (P new since last sheet, Q already seen)."
+5. Print the sheet URL and a one-line summary: "Pulled X raw (Y LinkedIn, Z company sites across N companies), kept M after scoring, wrote to tab `<date>` (P new since last sheet, Q already seen)." Name any company whose fetch failed.
 
 6. **Offer resumes, don't generate them.** This skill ends at the sheet — the search results are banked and safe. Then hand off:
 

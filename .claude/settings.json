@@ -1,7 +1,44 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(.venv/bin/python scripts/init_env.py)",
+      "Bash(.venv/bin/python scripts/check_connections.py --scope *)",
+      "Bash(.venv/bin/python scripts/check_connections.py)",
+      "Bash(.venv/bin/python scripts/fetch_jobs.py --config configs/search.json --raw-out outputs/raw_linkedin.json)",
+      "Bash(.venv/bin/python scripts/fetch_companies.py --config configs/companies.json --list)",
+      "Bash(.venv/bin/python scripts/fetch_companies.py --config configs/companies.json --raw-out outputs/raw_companies.json)",
+      "Bash(.venv/bin/python scripts/fetch_companies.py --config configs/companies.json --only * --raw-out outputs/raw_companies/*)",
+      "Bash(.venv/bin/python scripts/score_jobs.py --config configs/search.json --raw-in * --scored-out outputs/scored.json)",
+      "Bash(.venv/bin/python scripts/push_to_sheets.py --scored-in outputs/scored.json --tab-name *)",
+      "Bash(.venv/bin/python scripts/generate_resumes.py --config configs/search.json --profile context/profile.md --scored-in * --template templates/resume_template.tex --out-dir outputs/tailored_resumes*)",
+      "Bash(.venv/bin/python scripts/make_manual_posting.py --config configs/search.json --jd-file * --out *)",
+      "Bash(.venv/bin/python scripts/update_application_tracker.py --updates * --tab-name Applications)",
+      "Bash(.venv/bin/python scripts/build_dashboard_data.py --tab-name Applications --follow-up-after-days 7 --out outputs/dashboard_data.json)",
+      "Bash(.venv/bin/pip install -r requirements.txt)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(.env)",
+      "Read(**/.env)",
+      "Bash(cat .env*)",
+      "Bash(head .env*)",
+      "Bash(tail .env*)",
+      "Bash(less .env*)",
+      "Bash(more .env*)",
+      "Bash(grep * .env*)",
+      "Bash(sed * .env*)",
+      "Bash(awk * .env*)",
+      "Bash(cp .env*)",
+      "Bash(base64 .env*)",
+      "Bash(xxd .env*)",
+      "Bash(od .env*)",
+      "Bash(strings .env*)",
+      "Bash(sort .env*)",
+      "Bash(diff .env*)",
+      "Bash(nl .env*)"
     ]
-  }
+  },
+  "$comment": "Tracked, so a fresh clone gets the .env protections. The deny rules below are the enforced half of the secrets boundary described in CLAUDE.md -- they used to live only in .claude/settings.local.json, which is gitignored, meaning a new clone had prose and nothing else. The allow rules are project-generic (they name this repo's own scripts), so they belong here too; settings.local.json is for genuinely machine-specific additions."
 }

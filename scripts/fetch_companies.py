@@ -149,15 +149,55 @@ def fetch_workday(company: dict, limit: int) -> list[dict]:
 FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "workday": fetch_workday}
 
 
+def is_fetchable(company: dict) -> bool:
+    return company.get("ats") in FETCHERS
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--raw-out", required=True, type=Path)
+    parser.add_argument("--raw-out", type=Path, help="required unless --list is given")
+    parser.add_argument(
+        "--only",
+        action="append",
+        metavar="NAME",
+        help=(
+            "fetch just this company (case-insensitive name match); repeatable. "
+            "Lets the job-search skill walk companies one at a time and report progress "
+            "as it goes, instead of blocking on one silent multi-minute call."
+        ),
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="print the fetchable company names, one per line, and exit",
+    )
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text())
     companies = config.get("companies", [])
     limit = int(config.get("results_per_company", DEFAULT_RESULTS_PER_COMPANY))
+
+    if args.list:
+        for company in companies:
+            if is_fetchable(company):
+                print(f"{company.get('name', '<unnamed>')}\t{company.get('ats')}")
+        return 0
+
+    if args.raw_out is None:
+        parser.error("--raw-out is required unless --list is given")
+
+    if args.only:
+        wanted = {name.strip().casefold() for name in args.only}
+        matched = [c for c in companies if c.get("name", "").strip().casefold() in wanted]
+        missing = wanted - {c.get("name", "").strip().casefold() for c in matched}
+        if missing:
+            print(
+                f"ERROR: no company in {args.config} named: {', '.join(sorted(missing))}",
+                file=sys.stderr,
+            )
+            return 1
+        companies = matched
 
     all_items: list[dict] = []
     skipped: list[str] = []
