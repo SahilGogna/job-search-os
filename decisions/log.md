@@ -245,3 +245,26 @@ Not hard-blocking is deliberate: a connector may be unauthorizable at that momen
 **Alternatives considered:** Hard-block onboarding until Gmail connects — strands people over something they may not control. Leave it optional and just describe the cost better — the previous wording already described the cost and was still read as "skippable", because it was.
 
 **Owner:** Sahil
+
+## 2026-08-25 — `core_skills` must stay small; the denominator is the sum of all weights
+
+Onboarding first derived `configs/search.json` with 26 `core_skills` entries — the full
+flattened skill inventory from the resume, which is what §3 of the profile schema literally
+says to do ("flatten every skill category first"). The first real search scored **3 postings
+out of 747**.
+
+Cause: `score_jobs.py` divides by `sum_of_all_skill_weights + title_match_bonus`. With 26
+skills that denominator was 55, so clearing the default `min_match_score` of 50 required a
+posting to mention **more than half the candidate's entire skill inventory**. No real posting
+does. Peripheral entries (Oracle, MySQL, Visio, Waterfall, Power Query, BigQuery) cost nothing
+to match but inflated the denominator, depressing every score.
+
+Trimmed to the 14 skills genuinely central to the candidate's story (denominator 40).
+Distribution went from max 75 / 3 above threshold to max 88 / 39 above threshold, with 13
+above the 60 tailoring bar — and the schema's default thresholds (50 / 60) were left untouched.
+
+**Rule of thumb for deriving `core_skills`: 12–16 entries, not the full inventory.** A skill
+belongs there only if its absence from a posting is genuinely evidence of a poor match. The
+full inventory still lives in `context/profile.md` and is what resume generation reads, so
+trimming here costs nothing on the resume side. Tune the skill set, not `min_match_score` —
+lowering the threshold to compensate hides the modelling error instead of fixing it.
