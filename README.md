@@ -1,5 +1,7 @@
 # Job Search OS
 
+**Repository:** [github.com/SahilGogna/job-search-os](https://github.com/SahilGogna/job-search-os)
+
 ## What we're building
 
 A local Python project that turns a resume PDF into a live list of matching job postings — from LinkedIn *and* company career sites — in a Google Sheet, plus a tailored resume PDF for every strong match and a read-only Gmail dashboard tracking what happened to each application. No deployment. No external LLM calls. Claude Code is the reasoning layer.
